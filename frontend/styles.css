@@ -69,6 +69,17 @@ main { flex: 1; padding: 6px 22px 110px; }
 .hero .legs .k { font-size: 11px; color: var(--faint); letter-spacing: 0.08em; text-transform: uppercase; }
 .hero .legs .v { font-size: 15px; font-variant-numeric: tabular-nums; margin-top: 3px; }
 
+/* Level + streak card */
+.game-card { display: flex; align-items: center; gap: 16px; padding: 14px 0 22px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.gc-mid { flex: 1; min-width: 0; }
+.game-level { font-size: 15px; font-weight: 500; }
+.game-xp { font-size: 12px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.game-streak { text-align: right; }
+.streak-num { font-size: 28px; font-weight: 250; font-variant-numeric: tabular-nums; color: var(--faint); }
+.streak-num.up { color: var(--up); }
+.streak-lbl { font-size: 11px; color: var(--faint); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 2px; }
+.row.ach.locked { opacity: 0.4; }
+
 /* Metrics */
 .metrics { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
 .metrics .cell { flex: 1; padding: 18px 0; }

@@ -199,8 +199,32 @@ function applyTodayLock(savedToday, spentToday, proj) {
   if (!t.save_hit && proj.save_today > 0 && savedToday >= proj.save_today) { t.save_hit = true; t.save_value = proj.save_today; dirty = true; }
   if (!t.spend_hit && proj.spend_today > 0 && spentToday >= proj.spend_today) { t.spend_hit = true; t.spend_value = proj.spend_today; dirty = true; }
   if (dirty) save();
+  if (syncStreak(today, t.save_hit)) save();
   return { save_today: t.save_hit ? t.save_value : proj.save_today, save_locked: t.save_hit, spend_today: t.spend_hit ? t.spend_value : proj.spend_today, spend_locked: t.spend_hit };
 }
+
+// ---------- game: every dollar saved or skipped earns XP; hitting the save target keeps a streak alive ----------
+const ACHIEVEMENTS = [
+  { id: "first_save", name: "First save", desc: "Log a save for the first time", check: () => DB.saves.length > 0 },
+  { id: "first_skip", name: "First skip", desc: "Skip a purchase and bank the difference", check: () => DB.purchases.some(p => !p.was_made) },
+  { id: "streak_3", name: "3-day streak", desc: "Hit your save target 3 days running", check: () => DB.game.longest_streak >= 3 },
+  { id: "streak_7", name: "Week streak", desc: "Hit your save target 7 days running", check: () => DB.game.longest_streak >= 7 },
+  { id: "streak_30", name: "Month streak", desc: "Hit your save target 30 days running", check: () => DB.game.longest_streak >= 30 },
+  { id: "saved_100", name: "$100 banked", desc: "$100 saved or skipped, lifetime", check: () => lifetimeSaved() >= 100 },
+  { id: "saved_1000", name: "$1,000 banked", desc: "$1,000 saved or skipped, lifetime", check: () => lifetimeSaved() >= 1000 },
+  { id: "saved_10000", name: "$10,000 banked", desc: "$10,000 saved or skipped, lifetime", check: () => lifetimeSaved() >= 10000 },
+  { id: "goal_done", name: "Goal crushed", desc: "Fully fund a goal", check: () => DB.goals.some(g => g.target_amount > 0 && g.current_amount >= g.target_amount) },
+];
+function lifetimeSaved() { return DB.saves.reduce((s, x) => s + x.amount, 0) + DB.purchases.filter(p => !p.was_made).reduce((s, p) => s + p.amount, 0); }
+function levelInfo(xp) { let level = 1, need = 100, floor = 0; while (xp >= floor + need) { floor += need; level++; need = Math.round(need * 1.35); } return { level, xp_in_level: xp - floor, xp_for_next: need, pct: (xp - floor) / need }; }
+// Streak grows the day after the previous hit; missing a full day off (no hit yesterday or today) zeroes it, but longest_streak is permanent.
+function syncStreak(today, hitToday) {
+  const g = DB.game, gapFrom = iso => daysBetween(new Date(iso + "T00:00:00"), new Date(today + "T00:00:00"));
+  if (hitToday && g.last_hit_date !== today) { g.streak = (g.last_hit_date && gapFrom(g.last_hit_date) === 1) ? g.streak + 1 : 1; g.last_hit_date = today; g.longest_streak = Math.max(g.longest_streak, g.streak); return true; }
+  if (!hitToday && g.streak > 0 && g.last_hit_date && gapFrom(g.last_hit_date) > 1) { g.streak = 0; return true; }
+  return false;
+}
+function syncAchievements() { const g = DB.game; let dirty = false; ACHIEVEMENTS.forEach(a => { if (!g.achievements.includes(a.id) && a.check()) { g.achievements.push(a.id); dirty = true; } }); if (dirty) save(); return dirty; }
 
 function snapshot() {
   const a = DB.accounts;
@@ -217,6 +241,8 @@ function snapshot() {
   const ccBalance = a.filter(x => x.type === "credit_card").reduce((s, x) => s + x.balance, 0);
   const proj = projectFrom(midnight(), liquid, emergencySaved, ccBalance);
   const lock = applyTodayLock(savedToday, spentToday, proj);
+  syncAchievements();
+  const lvl = levelInfo(Math.round(lifetimeSaved()));
 
   return {
     accounts: a, assets, liabilities, net_worth: assets - liabilities, total_liquid: totalLiquid,
@@ -224,6 +250,9 @@ function snapshot() {
     ...proj, save_today: lock.save_today, save_locked: lock.save_locked, spend_today: lock.spend_today, spend_locked: lock.spend_locked,
     emergency_target: DB.savings.emergency_target || 0, emergency_pct: (DB.savings.emergency_target > 0) ? Math.min(1, emergencySaved / DB.savings.emergency_target) : (emergencySaved > 0 ? 1 : 0),
     has_setup: DB.events.some(e => e.kind === "income") || a.length > 0,
+    level: lvl.level, xp_in_level: lvl.xp_in_level, xp_for_next: lvl.xp_for_next, level_pct: lvl.pct,
+    streak: DB.game.streak, longest_streak: DB.game.longest_streak,
+    achievements: ACHIEVEMENTS.map(ac => ({ name: ac.name, desc: ac.desc, unlocked: DB.game.achievements.includes(ac.id) })),
   };
 }
 
@@ -495,6 +524,9 @@ function renderDashboard(v) {
   v.append(el(`<div class="note" style="text-align:right;margin:4px 0 0">${fmtNow()}</div>`));
   v.append(el(`<div class="hero"><div class="label">Net worth</div><div class="num metal">${money0(d.net_worth)}</div><div class="legs"><div><div class="k">Liquid</div><div class="v">${money0(d.total_liquid)}</div></div><div><div class="k">Assets</div><div class="v up">${money0(d.assets)}</div></div><div><div class="k">Debts</div><div class="v down">${money0(d.liabilities)}</div></div></div></div>`));
 
+  // Level + streak — every dollar saved or skipped is XP toward the next level
+  v.append(el(`<div class="game-card">${ringChart(d.level_pct, "#f5f5f7", 60)}<div class="gc-mid"><div class="game-level">Level ${d.level}</div><div class="game-xp">${money0(d.xp_in_level)} / ${money0(d.xp_for_next)} to next level</div></div><div class="game-streak"><div class="streak-num ${d.streak > 0 ? "up" : ""}">${d.streak}</div><div class="streak-lbl">day streak</div></div></div>`));
+
   // Today — the two target numbers
   v.append(el(`<div class="group-label">Today${d.has_income ? " · until " + fmtDate(d.next_payday) : ""}</div>`));
   v.append(el(`<div class="stats"><div class="s"><div class="k">Spend${d.spend_locked ? `<span class="chk">${ICONS.check}</span>` : ""}</div><div class="v ${d.spend_today <= 0 ? "down" : ""}">${money0(d.spend_today)}</div></div><div class="s"><div class="k">Save${d.save_locked ? `<span class="chk">${ICONS.check}</span>` : ""}</div><div class="v up">${money0(d.save_today)}</div></div><div class="s"><div class="k">Cash now</div><div class="v">${money0(d.liquid)}</div></div></div>`));
@@ -559,6 +591,12 @@ function renderDashboard(v) {
     DB.goals.forEach(g => { const pct = g.target_amount > 0 ? Math.min(1, g.current_amount / g.target_amount) : 0; list.append(el(`<div style="display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line)">${ringChart(pct, pct >= 1 ? "#2ecc71" : "#f5f5f7", 52)}<div style="flex:1"><div style="display:flex;justify-content:space-between;gap:8px"><span class="name">${escapeHtml(g.name)}</span><span class="subtle" style="font-size:12px">${money0(g.current_amount)} / ${money0(g.target_amount)}</span></div></div></div>`)); });
     v.append(collapsible("Goals", list));
   }
+
+  // Achievements — trophy case for streaks and lifetime saved/skipped milestones
+  const unlocked = d.achievements.filter(a => a.unlocked).length;
+  const achList = el(`<div class="section"></div>`);
+  d.achievements.forEach(a => achList.append(el(`<div class="row ach${a.unlocked ? "" : " locked"}"><div class="left"><span class="name">${escapeHtml(a.name)}</span><span class="meta">${escapeHtml(a.desc)}</span></div>${a.unlocked ? `<span class="chk">${ICONS.check}</span>` : ""}</div>`)));
+  v.append(collapsible(`Achievements (${unlocked}/${d.achievements.length})`, achList, false));
 }
 
 const ACCOUNT_TYPES = [["checking", "Checking"], ["savings", "Savings"], ["401k", "401(k)"], ["roth", "Roth IRA"], ["brokerage", "Brokerage"], ["other", "Other asset"], ["credit_card", "Credit card"], ["student_loan", "Student loan"], ["loan", "Other loan"]];
