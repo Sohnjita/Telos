@@ -1,6 +1,5 @@
 name: Deploy to GitHub Pages
 
-# Publishes frontend/ to GitHub Pages on every push to main.
 on:
   push:
     branches: [main]
@@ -21,6 +20,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
