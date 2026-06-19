@@ -1,0 +1,15 @@
+# NEVER commit real financial data
+backups/
+*.local.json
+
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+Thumbs.db
+
+# legacy/local data that may contain real numbers
+data/
+*.db
+*_compact.json

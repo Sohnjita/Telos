@@ -1,0 +1,9 @@
+# Auto-deploy: Netlify serves the static PWA from frontend/ on every push to main.
+[build]
+  publish = "frontend"
+  command = ""
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"

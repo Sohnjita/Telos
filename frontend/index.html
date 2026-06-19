@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="apple-mobile-web-app-title" content="Telos" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <title>Telos</title>
+  <link rel="stylesheet" href="styles.css?v=18" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand"><span class="word">Telos</span></div>
+      <div id="networth-pill" class="networth">—</div>
+    </header>
+
+    <main id="view"></main>
+
+    <nav class="tabbar">
+      <button class="tab active" data-tab="dashboard"><span class="lbl">Home</span></button>
+      <button class="tab" data-tab="schedule"><span class="lbl">Calendar</span></button>
+      <button class="tab" data-tab="decide"><span class="lbl">Decide</span></button>
+      <button class="tab" data-tab="history"><span class="lbl">History</span></button>
+      <button class="tab" data-tab="manage"><span class="lbl">Manage</span></button>
+    </nav>
+  </div>
+  <script src="app.js?v=18"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</body>
+</html>
