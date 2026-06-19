@@ -321,9 +321,29 @@ const state = {
 };
 function captureTabState() { if (state.tab === "decide" && state.decideView === "check" && $("#d-amt")) state.decide = { desc: $("#d-desc").value, amount: $("#d-amt").value, category: $("#d-cat").value, date: $("#d-date").value, disc: state.decideDisc ?? state.decide.disc }; }
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.tab)));
-function switchTab(tab) { captureTabState(); state.tab = tab; document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab)); render(); }
+const TAB_ORDER = ["dashboard", "schedule", "decide", "history", "manage"];
+let _navDir = 0;
+function switchTab(tab) { captureTabState(); _navDir = TAB_ORDER.indexOf(tab) - TAB_ORDER.indexOf(state.tab); state.tab = tab; document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab)); render(); }
 function refreshNetWorth() { $("#networth-pill").textContent = money0(snapshot().net_worth); }
-function render() { const v = $("#view"); v.innerHTML = ""; refreshNetWorth(); ({ dashboard: renderDashboard, schedule: renderCalendar, decide: renderDecide, history: renderHistory, manage: renderManage }[state.tab])(v); }
+function render() {
+  const v = $("#view"); v.innerHTML = ""; refreshNetWorth();
+  ({ dashboard: renderDashboard, schedule: renderCalendar, decide: renderDecide, history: renderHistory, manage: renderManage }[state.tab])(v);
+  v.classList.remove("slide-l", "slide-r", "fade-up"); void v.offsetWidth;
+  v.classList.add(_navDir > 0 ? "slide-l" : _navDir < 0 ? "slide-r" : "fade-up"); _navDir = 0;
+}
+// Swipe between tabs — ignored when the gesture starts on a horizontally-draggable control
+(() => {
+  const view = $("#view"); let sx = 0, sy = 0, tracking = false;
+  const blocked = t => t.closest && t.closest('input[type="range"], .ol-chips, .ol-plot, .cal, select, textarea');
+  view.addEventListener("touchstart", e => { if (blocked(e.target)) { tracking = false; return; } const t = e.touches[0]; sx = t.clientX; sy = t.clientY; tracking = true; }, { passive: true });
+  view.addEventListener("touchend", e => {
+    if (!tracking) return; tracking = false;
+    const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    const i = TAB_ORDER.indexOf(state.tab), ni = dx < 0 ? i + 1 : i - 1;
+    if (ni >= 0 && ni < TAB_ORDER.length) switchTab(TAB_ORDER[ni]);
+  }, { passive: true });
+})();
 
 // ---------- visuals ----------
 function ringChart(pct, color = "#f5f5f7", size = 76) { const r = size * 0.38, c = size / 2, sw = size * 0.1, circ = 2 * Math.PI * r, fill = Math.max(0, Math.min(1, pct)) * circ; return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="flex-shrink:0"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="rgba(245,245,247,0.09)" stroke-width="${sw}"/><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${fill.toFixed(2)} ${circ.toFixed(2)}" stroke-linecap="round" transform="rotate(-90 ${c} ${c})"/></svg>`; }
@@ -512,32 +532,32 @@ function renderDashboard(v) {
   const catEntries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
   if (catEntries.length) {
     const totalSpent = catEntries.reduce((s, [, amt]) => s + amt, 0);
-    v.append(el(`<div class="group-label">By category</div>`));
     const wrap = el(`<div class="wheel-row"></div>`);
     wrap.insertAdjacentHTML("beforeend", wheelChart(catEntries.map(([cat, amt]) => ({ amt, color: catColor(cat) }))));
     const legend = el(`<div class="wheel-legend"></div>`);
     catEntries.forEach(([cat, amt]) => legend.append(el(`<div class="wl-row"><i style="background:${catColor(cat)}"></i><span class="wl-name">${escapeHtml(cat)}</span><span class="wl-amt">${money0(amt)}</span><span class="wl-pct">${Math.round(amt / totalSpent * 100)}%</span></div>`)));
     wrap.append(legend);
-    v.append(wrap);
+    v.append(collapsible("By category", wrap));
   }
 
   // Where the money goes — forward projection from cash (calendar + balances combined)
   const agenda = projectedAgenda(45).slice(0, 7);
   if (agenda.length) {
-    v.append(el(`<div class="group-label">What's coming — balance after each</div>`));
     const list = el(`<div class="section"></div>`);
     agenda.forEach(r => { const inc = r.kind === "income"; list.append(el(`<div class="row"><div class="left"><span class="name">${escapeHtml(r.name)}</span><span class="meta">${fmtDate(isoOf(r.date))}</span></div><div style="display:flex;align-items:center;gap:14px"><span class="v ${inc ? "up" : "down"}">${inc ? "+" : "−"}${money0(r.amount)}</span><span class="v ${r.bal < 0 ? "down" : "subtle"}" style="min-width:62px;text-align:right">${money0(r.bal)}</span></div></div>`)); });
-    v.append(list);
+    v.append(collapsible("What's coming — balance after each", list));
   }
 
   // Outlook — swipeable projections (replaces the duplicated calendar)
-  renderOutlook(v);
+  const olWrap = el(`<div></div>`); renderOutlook(olWrap);
+  v.append(collapsible("Outlook", olWrap));
 
   // Goals
   if (DB.goals.length || d.emergency_target > 0) {
-    v.append(el(`<div class="group-label">Goals</div>`));
-    if (d.emergency_target > 0) { const ec = d.emergency_pct >= 1 ? "#2ecc71" : d.emergency_pct >= 0.5 ? "#f5a623" : "#ff4d4d"; v.append(el(`<div style="display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line)">${ringChart(d.emergency_pct, ec, 52)}<div style="flex:1"><div style="display:flex;justify-content:space-between;gap:8px"><span class="name">Emergency fund</span><span class="subtle" style="font-size:12px">${money0(d.emergency_saved)} / ${money0(d.emergency_target)}</span></div></div></div>`)); }
-    DB.goals.forEach(g => { const pct = g.target_amount > 0 ? Math.min(1, g.current_amount / g.target_amount) : 0; v.append(el(`<div style="display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line)">${ringChart(pct, pct >= 1 ? "#2ecc71" : "#f5f5f7", 52)}<div style="flex:1"><div style="display:flex;justify-content:space-between;gap:8px"><span class="name">${escapeHtml(g.name)}</span><span class="subtle" style="font-size:12px">${money0(g.current_amount)} / ${money0(g.target_amount)}</span></div></div></div>`)); });
+    const list = el(`<div></div>`);
+    if (d.emergency_target > 0) { const ec = d.emergency_pct >= 1 ? "#2ecc71" : d.emergency_pct >= 0.5 ? "#f5a623" : "#ff4d4d"; list.append(el(`<div style="display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line)">${ringChart(d.emergency_pct, ec, 52)}<div style="flex:1"><div style="display:flex;justify-content:space-between;gap:8px"><span class="name">Emergency fund</span><span class="subtle" style="font-size:12px">${money0(d.emergency_saved)} / ${money0(d.emergency_target)}</span></div></div></div>`)); }
+    DB.goals.forEach(g => { const pct = g.target_amount > 0 ? Math.min(1, g.current_amount / g.target_amount) : 0; list.append(el(`<div style="display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--line)">${ringChart(pct, pct >= 1 ? "#2ecc71" : "#f5f5f7", 52)}<div style="flex:1"><div style="display:flex;justify-content:space-between;gap:8px"><span class="name">${escapeHtml(g.name)}</span><span class="subtle" style="font-size:12px">${money0(g.current_amount)} / ${money0(g.target_amount)}</span></div></div></div>`)); });
+    v.append(collapsible("Goals", list));
   }
 }
 
@@ -550,6 +570,18 @@ const acctGlyph = t => GLYPH[TYPE_GLYPH[t] || "cash"];
 const CATEGORIES = ["shopping", "dining", "entertainment", "travel", "subscriptions", "gadgets", "health", "sport", "fitness", "essentials", "other"];
 const CAT_COLOR = { shopping: "#7aa2ff", dining: "#ff9f5a", entertainment: "#c792ea", travel: "#5ad1cf", subscriptions: "#ffd166", gadgets: "#8a8fff", health: "#ff6b8b", sport: "#6bd17a", fitness: "#4fc3f7", essentials: "#cfd3d8", other: "#8a8d93" };
 const catColor = c => CAT_COLOR[c] || CAT_COLOR.other;
+
+// ---------- collapsible sections + sortable lists (shared across tabs) ----------
+function collapsible(label, contentEl, defaultOpen = true) {
+  const det = el(`<details class="coll" ${defaultOpen ? "open" : ""}><summary class="group-label">${label}</summary></details>`);
+  det.append(contentEl);
+  return det;
+}
+function sortControl(current, options, onChange) {
+  const seg = el(`<div class="seg sortseg">${options.map(([k, l]) => `<button class="${k === current ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}</div>`);
+  seg.querySelectorAll("button").forEach(b => b.addEventListener("click", () => onChange(b.dataset.k)));
+  return seg;
+}
 
 // ---------- shared undo (History + Calendar day view both revert the same way) ----------
 function revertPurchase(p) {
@@ -737,13 +769,13 @@ function renderHistory(v) {
   const byCat = {}; made.forEach(p => byCat[p.category] = (byCat[p.category] || 0) + p.amount);
   const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
   if (cats.length) {
-    const max = cats[0][1]; v.append(el(`<div class="group-label">Spending by category</div>`));
+    const max = cats[0][1];
     const wrap = el(`<div class="section"></div>`);
     cats.forEach(([cat, amt]) => wrap.append(el(`<div class="catrow"><span class="cl">${escapeHtml(cat)}</span><span class="ct"><i style="width:${(amt / max * 100).toFixed(0)}%;background:${catColor(cat)}"></i></span><span class="cv">${money0(amt)}</span></div>`)));
-    v.append(wrap);
+    v.append(collapsible("Spending by category", wrap));
   }
   if (skippedSaved > 0) v.append(el(`<div class="hero" style="padding:18px 0"><div class="label">Saved by skipping</div><div class="num up">${money0(skippedSaved)}</div></div>`));
-  v.append(el(`<div class="group-label">All activity</div>`));
+  const actList = el(`<div></div>`);
   all.forEach(item => {
     if (item._k === "purchase") {
       const p = item, tag = p.verdict ? `<span class="tag ${p.verdict}">${p.verdict}</span>` : "";
@@ -753,14 +785,15 @@ function renderHistory(v) {
         if (p.was_made) revertPurchase(p); else DB.purchases = DB.purchases.filter(x => x.id !== p.id);
         save(); render();
       });
-      v.append(row);
+      actList.append(row);
     } else {
       const x = item;
       const row = el(`<div class="row"><div class="left"><span class="name">Saved to ${escapeHtml(x.dest || "savings")}</span><span class="meta">${fmtDate(x.date)} · moved from checking</span></div><div style="display:flex;align-items:center;gap:12px"><span class="v up">+${money0(x.amount)}</span><button class="del">×</button></div></div>`);
       $(".del", row).addEventListener("click", () => { if (!confirm("Undo this save?")) return; revertSave(x); save(); render(); });
-      v.append(row);
+      actList.append(row);
     }
   });
+  v.append(collapsible("All activity", actList));
   v.append(el(`<div class="note">× undoes an entry and restores balances.</div>`));
 }
 
@@ -771,19 +804,25 @@ function renderManage(v) {
   v.append(el(`<div class="view-title">Manage</div>`));
   const sv = DB.savings, p = DB.profile;
 
-  // Accounts with type glyphs
-  v.append(el(`<div class="group-label">Accounts</div>`));
-  DB.accounts.forEach(a => {
+  // Accounts with type glyphs — sortable by name, amount, or category (type)
+  const acctWrap = el(`<div></div>`);
+  acctWrap.append(sortControl(state.acctSort || "manual", [["manual", "Default"], ["name", "Name"], ["amount", "Amount"], ["type", "Category"]], k => { state.acctSort = k; render(); }));
+  let accts = [...DB.accounts];
+  if (state.acctSort === "name") accts.sort((a, b) => a.name.localeCompare(b.name));
+  else if (state.acctSort === "amount") accts.sort((a, b) => b.balance - a.balance);
+  else if (state.acctSort === "type") accts.sort((a, b) => typeLabel(a.type).localeCompare(typeLabel(b.type)));
+  accts.forEach(a => {
     let meta = typeLabel(a.type); if (a.is_liability && a.apr) meta += ` · ${a.apr}%`;
     const row = el(`<div class="row"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph">${acctGlyph(a.type)}</span><span style="display:flex;flex-direction:column"><span class="name">${escapeHtml(a.name)}</span><span class="meta">${meta}</span></span></div><div style="display:flex;align-items:center;gap:14px"><span class="v ${a.is_liability ? "down" : ""}">${a.is_liability ? "-" : ""}${money0(a.balance)}</span><button class="del">×</button></div></div>`);
     $(".edit", row).addEventListener("click", () => { state.editAccount = a.id; render(); });
     $(".del", row).addEventListener("click", () => { DB.accounts = DB.accounts.filter(x => x.id !== a.id); if (state.editAccount === a.id) state.editAccount = null; save(); render(); });
-    v.append(row);
+    acctWrap.append(row);
   });
-  v.append(accountForm());
+  acctWrap.append(accountForm());
+  v.append(collapsible("Accounts", acctWrap));
 
   // Retirement (Roth auto-max + 401k)
-  v.append(el(`<div class="group-label">Retirement</div>`));
+  const retWrap = el(`<div></div>`);
   const autoOn = sv.roth_auto, limit = sv.roth_limit || 7500;
   const sec = el(`<div class="section">
     <div class="row" style="border:none;padding:6px 0;cursor:pointer" id="roth-auto-row"><div class="left" style="flex-direction:row;align-items:center;gap:12px"><span class="glyph">${GLYPH.invest}</span><span class="name">Max ${new Date().getFullYear()} Roth · $${limit.toLocaleString()}</span></div><input type="checkbox" id="roth-auto" ${autoOn ? "checked" : ""} style="width:auto" /></div>
@@ -792,7 +831,8 @@ function renderManage(v) {
     <label class="field"><span>401(k) / mo</span><input id="k401-m" type="number" value="${sv.k401_monthly || ""}" placeholder="0" /></label>
     <button class="btn secondary" id="ret-save">Save</button>
   </div>`);
-  v.append(sec);
+  retWrap.append(sec);
+  v.append(collapsible("Retirement", retWrap));
   const rothCalc = () => { const ytd = +($("#roth-ytd", sec)?.value) || 0, rem = Math.max(0, limit - ytd); return `Save <b>${money0(rem / daysToTaxDay())}/day</b> to put in ${money0(rem)} more by Apr 15.`; };
   const calcEl = $("#roth-calc", sec); if (calcEl) calcEl.innerHTML = rothCalc();
   const toggleRoth = () => { const on = $("#roth-auto", sec).checked; $("#roth-auto-box", sec).style.display = on ? "block" : "none"; $("#roth-manual-box", sec).style.display = on ? "none" : "block"; };
@@ -802,7 +842,7 @@ function renderManage(v) {
   $("#ret-save", sec).addEventListener("click", () => { const on = $("#roth-auto", sec).checked; DB.savings = { ...DB.savings, roth_auto: on, roth_ytd: on ? (+$("#roth-ytd", sec).value || 0) : sv.roth_ytd, roth_monthly: on ? sv.roth_monthly : (+$("#roth-m", sec).value || 0), k401_monthly: +$("#k401-m", sec).value || 0 }; save(); refreshNetWorth(); render(); });
 
   // Emergency fund — funded after retirement; target + a date to reach it
-  v.append(el(`<div class="group-label">Emergency fund</div>`));
+  const emgWrap = el(`<div></div>`);
   const eRemNow = Math.max(0, (sv.emergency_target || 0) - snapshot().emergency_saved);
   const emgMonths = (sv.emergency_date && daysUntil(sv.emergency_date) > 0) ? monthsUntil(sv.emergency_date) : "";
   const esec = el(`<div class="section">
@@ -810,54 +850,60 @@ function renderManage(v) {
     <button class="btn secondary" id="emg-save">Save</button>
     <div class="note" id="emg-calc"></div>
   </div>`);
-  v.append(esec);
+  emgWrap.append(esec);
+  v.append(collapsible("Emergency fund", emgWrap));
   const emgCalc = () => { const t = +($("#emg-t", esec)?.value) || 0, mo = +($("#emg-mo", esec)?.value) || 0, rem = Math.max(0, t - snapshot().emergency_saved); if (t <= 0) return "Set a target and how many months to reach it."; if (rem <= 0) return "Already funded — your savings cover the target."; const days = mo > 0 ? mo * 30.44 : 365; return `Save <b>${money0(rem / days)}/day</b> toward this${mo > 0 ? " — done around " + fmtDate(isoMonthsFromNow(mo)) : " (default: 1 year)"}. Funded after your retirement each day.`; };
   const ecEl = $("#emg-calc", esec); if (ecEl) ecEl.innerHTML = emgCalc();
   $("#emg-t", esec).addEventListener("input", () => ecEl.innerHTML = emgCalc());
   $("#emg-mo", esec).addEventListener("input", () => ecEl.innerHTML = emgCalc());
   $("#emg-save", esec).addEventListener("click", () => { const mo = +$("#emg-mo", esec).value || 0; DB.savings = { ...DB.savings, emergency_target: +$("#emg-t", esec).value || 0, emergency_date: mo > 0 ? isoMonthsFromNow(mo) : "" }; save(); render(); });
 
-  // Goals
-  v.append(el(`<div class="group-label">Goals</div>`));
-  DB.goals.forEach(g => {
+  // Goals — sortable by name, amount, or priority
+  const goalWrap = el(`<div></div>`);
+  goalWrap.append(sortControl(state.goalSort || "manual", [["manual", "Default"], ["name", "Name"], ["amount", "Amount"], ["priority", "Priority"]], k => { state.goalSort = k; render(); }));
+  let goals = [...DB.goals];
+  if (state.goalSort === "name") goals.sort((a, b) => a.name.localeCompare(b.name));
+  else if (state.goalSort === "amount") goals.sort((a, b) => b.target_amount - a.target_amount);
+  else if (state.goalSort === "priority") goals.sort((a, b) => (a.priority || 0) - (b.priority || 0));
+  goals.forEach(g => {
     if (state.editGoal === g.id) {
       const gMonths = (g.target_date && daysUntil(g.target_date) > 0) ? monthsUntil(g.target_date) : "";
       const eg = el(`<div class="section" style="padding-top:10px"><label class="field"><span>Name</span><input id="eg-name" value="${escapeHtml(g.name)}" /></label><div class="two"><label class="field"><span>Target</span><input id="eg-target" type="number" value="${g.target_amount}" /></label><label class="field"><span>Saved</span><input id="eg-current" type="number" value="${g.current_amount}" /></label></div><div class="two"><label class="field"><span>Reach in (months)</span><input id="eg-mo" type="number" inputmode="numeric" placeholder="12" value="${gMonths}" /></label><label class="field"><span>or /mo</span><input id="eg-monthly" type="number" value="${g.monthly_contribution || ""}" /></label></div><div style="display:flex;gap:10px"><button class="btn small" id="eg-save" style="flex:1">Save</button><button class="btn secondary small" id="eg-cancel">Cancel</button></div></div>`);
       $("#eg-save", eg).addEventListener("click", () => { const mo = +$("#eg-mo", eg).value || 0; Object.assign(g, { name: $("#eg-name", eg).value.trim() || g.name, target_amount: +$("#eg-target", eg).value || 0, current_amount: +$("#eg-current", eg).value || 0, target_date: mo > 0 ? isoMonthsFromNow(mo) : "", monthly_contribution: +$("#eg-monthly", eg).value || 0 }); state.editGoal = null; save(); render(); });
       $("#eg-cancel", eg).addEventListener("click", () => { state.editGoal = null; render(); });
-      v.append(eg);
+      goalWrap.append(eg);
     } else {
       const rem = Math.max(0, g.target_amount - g.current_amount), daily = g.target_date && daysUntil(g.target_date) > 0 ? rem / daysUntil(g.target_date) : (g.monthly_contribution > 0 ? g.monthly_contribution / DPM : 0);
       const row = el(`<div class="row"><div class="left edit" style="cursor:pointer"><span class="name">${escapeHtml(g.name)}</span><span class="meta">${money0(g.current_amount)}/${money0(g.target_amount)}${daily > 0 ? " · " + money0(daily) + "/day" : ""}</span></div><button class="del">×</button></div>`);
       $(".edit", row).addEventListener("click", () => { state.editGoal = g.id; render(); });
       $(".del", row).addEventListener("click", () => { DB.goals = DB.goals.filter(x => x.id !== g.id); save(); render(); });
-      v.append(row);
+      goalWrap.append(row);
     }
   });
   const ga = el(`<div class="section" style="margin-top:10px"><label class="field"><span>New goal</span><input id="g-name" placeholder="House down payment" /></label><div class="two"><label class="field"><span>Target</span><input id="g-target" type="number" placeholder="0" /></label><label class="field"><span>Saved</span><input id="g-current" type="number" placeholder="0" /></label></div><button class="btn secondary" id="g-add">Add goal</button></div>`);
-  v.append(ga);
+  goalWrap.append(ga);
   $("#g-add", ga).addEventListener("click", () => { const name = $("#g-name", ga).value.trim(); if (!name) return; DB.goals.push({ id: nextId(), name, target_amount: +$("#g-target", ga).value || 0, current_amount: +$("#g-current", ga).value || 0, monthly_contribution: 0, target_date: "", priority: DB.goals.length + 1 }); save(); render(); });
+  v.append(collapsible("Goals", goalWrap));
 
   // Details
-  v.append(el(`<div class="group-label">Details</div>`));
   const det = el(`<div class="section">
     <div class="two"><label class="field"><span>Credit score</span><input id="p-credit" type="number" value="${p.credit_score || ""}" placeholder="750" /></label><label class="field"><span>Pre-tax salary</span><input id="p-pretax" type="number" value="${p.annual_salary_pretax || ""}" placeholder="0" /></label></div>
     <label class="field"><span>Priorities (coach uses these)</span><textarea id="p-pri" rows="2" placeholder="swimming, safety net, debt-free by 30">${escapeHtml(p.priorities || "")}</textarea></label>
     <label class="field"><span>Anthropic API key (optional)</span><input id="p-key" type="password" placeholder="sk-ant-…" value="${escapeHtml(p.anthropic_key || "")}" autocomplete="off" /></label>
     <button class="btn secondary" id="p-save">Save</button>
   </div>`);
-  v.append(det);
+  v.append(collapsible("Details", det));
   $("#p-save", det).addEventListener("click", () => { DB.profile = { ...p, credit_score: +$("#p-credit", det).value || 0, annual_salary_pretax: +$("#p-pretax", det).value || 0, priorities: $("#p-pri", det).value.trim(), anthropic_key: $("#p-key", det).value.trim() }; save(); flash(det, "Saved"); });
 
   // Data
-  v.append(el(`<div class="group-label">Data</div>`));
   const data = el(`<div class="section"><div class="btn-row"></div><div class="note">On this device only. Back up regularly.</div></div>`);
   const exp = el(`<button class="btn secondary">Back up</button>`), imp = el(`<button class="btn secondary">Restore</button>`), reset = el(`<button class="btn text" style="color:var(--down)">Erase all</button>`), file = el(`<input type="file" accept="application/json" style="display:none" />`);
   exp.addEventListener("click", () => download(`money-backup-${isoToday()}.json`, JSON.stringify(DB, null, 2)));
   imp.addEventListener("click", () => file.click());
   file.addEventListener("change", e => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { try { const o = JSON.parse(rd.result); if (!o.accounts && !o.profile) throw 0; DB = migrate(o); save(); switchTab("dashboard"); } catch { alert("Not a Money backup file."); } }; rd.readAsText(f); });
   reset.addEventListener("click", () => { if (confirm("Erase ALL data? Back up first.")) { DB = blank(); save(); switchTab("dashboard"); } });
-  $(".btn-row", data).append(exp, imp, reset, file); v.append(data);
+  $(".btn-row", data).append(exp, imp, reset, file);
+  v.append(collapsible("Data", data));
 }
 function download(name, text) { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 function flash(card, msg) { const n = el(`<div class="note ok">${msg}</div>`); card.append(n); setTimeout(() => n.remove(), 1600); }
