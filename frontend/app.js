@@ -277,7 +277,8 @@ function logSave(amount, acctId) {
 // ============================================================================
 const state = {
   tab: "dashboard", convId: null, editAccount: null, editGoal: null,
-  decideView: "check", calYear: null, calMonth: null, schedSel: null, editEvent: null, whatIfAcct: null, whatIfMonthly: 200,
+  decideView: "check", calYear: null, calMonth: null, schedSel: null, editEvent: null, whatIfMonthly: 200,
+  outlookMetric: "net", outlookDays: 30,
   decide: { desc: "", amount: "", category: "shopping", disc: 1 },
 };
 function captureTabState() { if (state.tab === "decide" && state.decideView === "check" && $("#d-amt")) state.decide = { desc: $("#d-desc").value, amount: $("#d-amt").value, category: $("#d-cat").value, disc: state.decideDisc ?? state.decide.disc }; }
@@ -312,8 +313,95 @@ function miniCalendar(jumpToCal) {
   return wrap;
 }
 
+// ---------- forward simulation for outlooks ----------
+// Projects every account forward day-by-day from today, applying scheduled
+// income/expenses, your current daily save plan, discretionary spend, debt
+// interest (APR) and savings/checking APY. Returns net-worth, liquid, and
+// per-account series of {i (day offset), v (balance)}.
+function projectSim(days) {
+  const s = snapshot(), start = midnight();
+  const bal = {}; DB.accounts.forEach(a => bal[a.id] = a.balance);
+  const occ = occurrences(start, addDays(start, days + 1)), buckets = {};
+  occ.forEach(o => { const i = daysBetween(start, o.date); (buckets[i] = buckets[i] || []).push(o); });
+  const idOf = t => { const a = DB.accounts.find(x => x.type === t); return a ? a.id : null; };
+  const chkId = idOf("checking"), rothId = idOf("roth"), k401Id = idOf("401k"), savId = idOf("savings"), cardId = idOf("credit_card");
+  const tg = {}; s.targets.forEach(t => tg[t.key] = t.funded);
+  const rothD = tg.roth || 0, k401D = tg.k401 || 0, emgD = tg.emg || 0, ccD = tg.cc || 0, spendD = s.spend_today;
+  const out = { net: [], liquid: [], acct: {} }; DB.accounts.forEach(a => out.acct[a.id] = []);
+  const rec = i => {
+    let assets = 0, liab = 0, lq = 0;
+    DB.accounts.forEach(a => { const b = bal[a.id]; if (a.is_liability) liab += b; else assets += b; if (!a.is_liability && (a.type === "checking" || a.type === "savings")) lq += b; out.acct[a.id].push({ i, v: b }); });
+    out.net.push({ i, v: assets - liab }); out.liquid.push({ i, v: lq });
+  };
+  rec(0);
+  for (let i = 1; i <= days; i++) {
+    DB.accounts.forEach(a => { if (a.is_liability && a.apr) bal[a.id] *= 1 + a.apr / 100 / 365; else if (!a.is_liability && a.apy) bal[a.id] *= 1 + a.apy / 100 / 365; });
+    (buckets[i] || []).forEach(o => { if (chkId != null) bal[chkId] += o.ev.kind === "income" ? o.amount : -o.amount; });
+    if (chkId != null) {
+      if (rothId != null) { bal[chkId] -= rothD; bal[rothId] += rothD; }
+      if (k401Id != null) { bal[chkId] -= k401D; bal[k401Id] += k401D; }
+      if (savId != null) { bal[chkId] -= emgD; bal[savId] += emgD; }
+      if (cardId != null && ccD > 0) { bal[chkId] -= ccD; bal[cardId] = Math.max(0, bal[cardId] - ccD); }
+      bal[chkId] -= spendD;
+    }
+    rec(i);
+  }
+  return out;
+}
+
+// Interactive line chart you can drag a finger across to read value + date.
+function scrubChart(series, color) {
+  const vals = series.map(p => p.v), n = series.length, W = 600, H = 170, pad = 8;
+  const max = Math.max(...vals), min = Math.min(...vals), range = (max - min) || 1;
+  const X = i => pad + (i / (n - 1)) * (W - 2 * pad), Y = v => H - pad - ((v - min) / range) * (H - 2 * pad);
+  const pts = series.map((p, i) => `${X(i).toFixed(1)},${Y(p.v).toFixed(1)}`), line = "M" + pts.join(" L");
+  const area = `${line} L${X(n - 1).toFixed(1)},${H - pad} L${X(0).toFixed(1)},${H - pad} Z`, gid = "g" + Math.random().toString(36).slice(2, 7);
+  const dateAt = i => fmtDate(isoOf(addDays(midnight(), i)));
+  const wrap = el(`<div class="outlook-chart">
+    <div class="ol-read"><span class="ol-val">${money0(series[n - 1].v)}</span><span class="ol-date">${dateAt(series[n - 1].i)}</span></div>
+    <div class="ol-plot">
+      <svg class="ol-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity="0.22"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>${min < 0 && max > 0 ? `<line class="ol-zero" x1="0" y1="${Y(0).toFixed(1)}" x2="${W}" y2="${Y(0).toFixed(1)}"/>` : ""}<path d="${area}" fill="url(#${gid})"/><path class="ol-line" d="${line}" style="stroke:${color}"/></svg>
+      <div class="ol-guide"></div><div class="ol-dot" style="background:${color}"></div>
+    </div>
+  </div>`);
+  const plot = $(".ol-plot", wrap), guide = $(".ol-guide", wrap), dot = $(".ol-dot", wrap), valEl = $(".ol-val", wrap), dateEl = $(".ol-date", wrap);
+  const reset = () => { guide.style.opacity = 0; dot.style.opacity = 0; valEl.textContent = money0(series[n - 1].v); dateEl.textContent = dateAt(series[n - 1].i); };
+  const scrub = cx => {
+    const r = plot.getBoundingClientRect(); let f = (cx - r.left) / r.width; f = Math.max(0, Math.min(1, f));
+    const idx = Math.round(f * (n - 1)), p = series[idx], lx = X(idx) / W * 100, ly = Y(p.v) / H * 100;
+    guide.style.left = lx + "%"; guide.style.opacity = 1; dot.style.left = lx + "%"; dot.style.top = ly + "%"; dot.style.opacity = 1;
+    valEl.textContent = money0(p.v); dateEl.textContent = dateAt(p.i);
+  };
+  plot.addEventListener("pointerdown", e => { plot.setPointerCapture(e.pointerId); scrub(e.clientX); });
+  plot.addEventListener("pointermove", e => { if (e.buttons || e.pointerType === "touch") scrub(e.clientX); });
+  plot.addEventListener("pointerup", reset); plot.addEventListener("pointercancel", reset); plot.addEventListener("pointerleave", e => { if (!(e.buttons)) reset(); });
+  return wrap;
+}
+
+function renderOutlook(v) {
+  if (!DB.accounts.length) return;
+  const days = state.outlookDays || 30, metric = state.outlookMetric || "net";
+  const sim = projectSim(365);
+  const full = metric === "net" ? sim.net : metric === "liquid" ? sim.liquid : (sim.acct[+metric] || sim.net);
+  const series = full.slice(0, days + 1);
+  v.append(el(`<div class="group-label">Outlook</div>`));
+  const chips = el(`<div class="ol-chips"></div>`);
+  const addChip = (key, label) => { const c = el(`<button class="ol-chip ${String(metric) === String(key) ? "on" : ""}">${escapeHtml(label)}</button>`); c.addEventListener("click", () => { state.outlookMetric = key; render(); }); chips.append(c); };
+  addChip("net", "Net worth"); addChip("liquid", "Liquid");
+  DB.accounts.forEach(a => addChip(String(a.id), a.name));
+  v.append(chips);
+  const chg = series[series.length - 1].v - series[0].v;
+  v.append(scrubChart(series, chg >= 0 ? "#2ecc71" : "#ff4d4d"));
+  const seg = el(`<div class="seg ol-horizon"></div>`);
+  [["7", "1W"], ["30", "1M"], ["90", "3M"], ["180", "6M"], ["365", "1Y"]].forEach(([d, l]) => { const b = el(`<button class="${String(days) === d ? "on" : ""}">${l}</button>`); b.addEventListener("click", () => { state.outlookDays = +d; render(); }); seg.append(b); });
+  v.append(seg);
+  const lo = series.reduce((m, p) => p.v < m.v ? p : m, series[0]);
+  const label = { 7: "1 week", 30: "1 month", 90: "3 months", 180: "6 months", 365: "1 year" }[days];
+  v.append(el(`<div class="fs-cap">${chg >= 0 ? "+" : ""}${money0(chg)} projected over ${label}. Low point ${money0(lo.v)} around ${fmtDate(isoOf(addDays(midnight(), lo.i)))}. Drag across the line to read any date.</div>`));
+}
+
 // ============================================================================
-//  DASHBOARD (Home) — net worth, today, calendar+flow, goals
+//  DASHBOARD (Home) — net worth, today, outlook, flow, goals
 // ============================================================================
 function renderDashboard(v) {
   const d = snapshot();
@@ -359,10 +447,8 @@ function renderDashboard(v) {
     v.append(list);
   }
 
-  // Mini calendar
-  v.append(el(`<div class="group-label">Calendar</div>`));
-  v.append(miniCalendar(true));
-  v.append(el(`<div class="legend" style="margin-top:8px"><span><i style="background:var(--up)"></i>Income</span><span><i style="background:var(--down)"></i>Expense</span><span><i style="background:var(--text)"></i>Spent</span></div>`));
+  // Outlook — swipeable projections (replaces the duplicated calendar)
+  renderOutlook(v);
 
   // Goals
   if (DB.goals.length || d.emergency_target > 0) {
@@ -433,12 +519,6 @@ function renderCalendar(v) {
     v.append(eventForm(dayIso, state.editEvent));
   }
 
-  // 12-month cash outlook
-  v.append(el(`<div class="group-label">12-month cash outlook</div>`));
-  const series = projectedLiquidSeries(12);
-  v.append(el(`<div class="chart">${areaChart(series)}<div class="axis"><span>now ${money0(series[0])}</span><span>12mo ${money0(series[12])}</span></div></div>`));
-  const low = Math.min(...series);
-  v.append(el(`<div class="note">Projected cash from your scheduled income & bills (before day-to-day spending). Low point: ${money0(low)}${low < 0 ? " — you'd dip into credit; add income or trim a bill" : ""}.</div>`));
 }
 
 function eventForm(prefillDate, editId) {
@@ -686,13 +766,14 @@ function accountForm() {
     <label class="field"><span>Name</span><input id="a-name" placeholder="Chase checking" value="${escapeHtml(e.name)}" /></label>
     <div class="two"><label class="field"><span>Type</span><select id="a-type">${ACCOUNT_TYPES.map(t => `<option value="${t[0]}" ${t[0] === e.type ? "selected" : ""}>${t[1]}</option>`).join("")}</select></label><label class="field" data-f="balance"><span>Balance</span><input id="a-bal" type="number" placeholder="0" value="${e.balance || ""}" /></label></div>
     <div class="two"><label class="field" data-f="principal"><span>Principal</span><input id="a-prin" type="number" placeholder="0" value="${e.principal || ""}" /></label><label class="field" data-f="interest"><span>Interest bal</span><input id="a-int" type="number" placeholder="0" value="${e.interest_balance || ""}" /></label></div>
-    <label class="field" data-f="apr"><span>APR %</span><input id="a-apr" type="number" placeholder="0" value="${e.apr || ""}" /></label>
+    <div class="two"><label class="field" data-f="apr"><span>APR %</span><input id="a-apr" type="number" placeholder="0" value="${e.apr || ""}" /></label><label class="field" data-f="apy"><span>APY % (interest earned)</span><input id="a-apy" type="number" placeholder="0" value="${e.apy || ""}" /></label></div>
     <div class="btn-row"><button class="btn ${editing ? "" : "secondary"}" id="a-save">${editing ? "Update" : "Add account"}</button>${editing ? `<button class="btn text" id="a-cancel">Cancel</button>` : ""}</div>
   </div>`);
   const typeSel = $("#a-type", form);
-  const applyFields = () => { const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan"; form.querySelector('[data-f="balance"]').style.display = isLoan ? "none" : "block"; form.querySelector('[data-f="principal"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="interest"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="apr"]').style.display = isLiab ? "block" : "none"; };
+  const APY_TYPES = ["checking", "savings", "brokerage"];
+  const applyFields = () => { const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan"; form.querySelector('[data-f="balance"]').style.display = isLoan ? "none" : "block"; form.querySelector('[data-f="principal"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="interest"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="apr"]').style.display = isLiab ? "block" : "none"; form.querySelector('[data-f="apy"]').style.display = APY_TYPES.includes(t) ? "block" : "none"; };
   typeSel.addEventListener("change", applyFields); applyFields();
-  $("#a-save", form).addEventListener("click", () => { const name = $("#a-name", form).value.trim(); if (!name) return; const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan", apr = +$("#a-apr", form).value || 0; let principal = 0, interest = 0, balance; if (isLoan) { principal = +$("#a-prin", form).value || 0; interest = +$("#a-int", form).value || 0; balance = principal + interest; } else balance = +$("#a-bal", form).value || 0; const data = { name, type: t, balance, is_liability: isLiab, apr: isLiab ? apr : 0, principal: isLoan ? principal : 0, interest_balance: isLoan ? interest : 0 }; if (editing) Object.assign(editing, data); else DB.accounts.push({ id: nextId(), ...data }); state.editAccount = null; save(); render(); });
+  $("#a-save", form).addEventListener("click", () => { const name = $("#a-name", form).value.trim(); if (!name) return; const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan", apr = +$("#a-apr", form).value || 0, apy = +$("#a-apy", form).value || 0; let principal = 0, interest = 0, balance; if (isLoan) { principal = +$("#a-prin", form).value || 0; interest = +$("#a-int", form).value || 0; balance = principal + interest; } else balance = +$("#a-bal", form).value || 0; const data = { name, type: t, balance, is_liability: isLiab, apr: isLiab ? apr : 0, apy: APY_TYPES.includes(t) ? apy : 0, principal: isLoan ? principal : 0, interest_balance: isLoan ? interest : 0 }; if (editing) Object.assign(editing, data); else DB.accounts.push({ id: nextId(), ...data }); state.editAccount = null; save(); render(); });
   const cancel = $("#a-cancel", form); if (cancel) cancel.addEventListener("click", () => { state.editAccount = null; render(); });
 
   // Per-account projection: pay-off (debts) or growth (investments)

@@ -239,6 +239,24 @@ select { -webkit-appearance: none; appearance: none; }
 .glyph { display: inline-flex; width: 30px; height: 30px; flex-shrink: 0; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 9px; }
 .glyph svg { width: 17px; height: 17px; stroke: var(--text); fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 
+/* Outlook (forward projections) */
+.ol-chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 12px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.ol-chips::-webkit-scrollbar { display: none; }
+.ol-chip { flex: 0 0 auto; background: none; border: 1px solid var(--line-strong); color: var(--muted); padding: 7px 14px; border-radius: 980px; font-size: 13px; cursor: pointer; white-space: nowrap; transition: color .15s, background .15s; }
+.ol-chip.on { background-image: linear-gradient(180deg, #fff, #e3e3e9); color: #000; border-color: transparent; }
+.outlook-chart { margin: 2px 0 10px; }
+.ol-read { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; min-height: 46px; }
+.ol-val { font-size: 30px; font-weight: 300; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.ol-date { font-size: 12px; color: var(--muted); }
+.ol-plot { position: relative; height: 170px; touch-action: none; cursor: crosshair; }
+.ol-svg { width: 100%; height: 100%; display: block; }
+.ol-line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.ol-zero { stroke: var(--line-strong); stroke-width: 1; vector-effect: non-scaling-stroke; stroke-dasharray: 3 4; }
+.ol-guide { position: absolute; top: 0; height: 100%; width: 1px; background: var(--line-strong); opacity: 0; pointer-events: none; }
+.ol-dot { position: absolute; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%); opacity: 0; pointer-events: none; box-shadow: 0 0 0 3px var(--bg), 0 0 8px rgba(0,0,0,0.6); }
+.ol-horizon { margin-top: 4px; }
+.ol-horizon button { font-size: 13px; }
+
 /* Range slider */
 input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 3px; background: var(--line-strong); border-radius: 3px; padding: 0; margin: 10px 0; }
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: linear-gradient(180deg, #fff, #d8d8de); border: none; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }

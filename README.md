@@ -26,17 +26,17 @@ One-time setup (from a computer, once):
    ```
 2. **Install the Claude GitHub app** on the repo: https://github.com/apps/claude → Install → select this repo.
 3. **Add your API key as a secret:** repo → Settings → Secrets and variables → Actions → New repository secret → name `ANTHROPIC_API_KEY`, value from https://console.anthropic.com.
-4. **Connect auto-deploy:** netlify.com → Add new site → Import from GitHub → this repo (publish dir `frontend`, build command empty). Netlify redeploys on every merge to `main`.
-5. Add the Netlify URL to your phone Home Screen.
+4. **Turn on GitHub Pages:** repo → Settings → Pages → Build and deployment → Source = **GitHub Actions**. The included `.github/workflows/deploy.yml` publishes `frontend/` on every push to `main`. Your site lives at `https://<you>.github.io/telos/`.
+5. Add that URL to your phone Home Screen.
 
 Daily loop (from the GitHub mobile app on your phone):
 
 1. Open an **Issue** (or comment on a PR): `@claude add an APY field to savings accounts and show projected interest`.
 2. Claude opens a **pull request** with the change.
 3. Review and **merge** it on your phone.
-4. Netlify redeploys in ~30s → reopen Telos to test.
+4. Pages redeploys in ~1 min → reopen Telos to test.
 
-> Each `@claude` run uses your Anthropic API key (a few cents per change). `.github/workflows/claude.yml` and `netlify.toml` are already set up.
+> Each `@claude` run uses your Anthropic API key (a few cents per change). `.github/workflows/claude.yml` (the bot) and `.github/workflows/deploy.yml` (Pages) are already set up.
 
 ---
 
