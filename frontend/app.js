@@ -16,6 +16,7 @@ const ICONS = {
   decide:  `<svg viewBox="0 0 24 24"><path d="M12 3.5v17"/><path d="M8 20.5h8"/><path d="M4.5 7.3h15"/><path d="M7 5.8 12 4.8l5 1"/><path d="M4.5 7.3 2.3 12.2h4.4z"/><path d="M19.5 7.3 17.3 12.2h4.4z"/></svg>`,
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.3 2"/></svg>`,
   manage:  `<svg viewBox="0 0 24 24"><path d="M4 7.5h9"/><path d="M17 7.5h3"/><circle cx="15" cy="7.5" r="2"/><path d="M4 16.5h3"/><path d="M11 16.5h9"/><circle cx="9" cy="16.5" r="2"/></svg>`,
+  check:   `<svg viewBox="0 0 24 24"><path d="M4.5 12.5 9.5 17.5 19.5 6.5"/></svg>`,
 };
 const TAB_ICON = { dashboard: "home", schedule: "calendar", decide: "decide", history: "history", manage: "manage" };
 // account-type glyphs (minimalist, stroke)
@@ -37,6 +38,8 @@ const blank = () => ({
   seq: 1, accounts: [], events: [], goals: [], purchases: [], saves: [], conversations: [],
   savings: { roth_auto: false, roth_ytd: 0, roth_limit: 7500, roth_monthly: 0, k401_monthly: 0, emergency_monthly: 0, emergency_target: 0, emergency_date: "" },
   profile: { credit_score: 0, priorities: "", anthropic_key: "", annual_salary_pretax: 0 },
+  today_lock: { date: "", save_hit: false, save_value: 0, spend_hit: false, spend_value: 0 },
+  game: { streak: 0, longest_streak: 0, last_hit_date: "", achievements: [] },
 });
 function migrate(db) {
   if (db.events) {
@@ -45,6 +48,8 @@ function migrate(db) {
     db.profile = db.profile || blank().profile;
     db.goals = (db.goals || []).map(g => ({ target_date: "", ...g }));
     if (!db.saves) db.saves = [];
+    if (!db.today_lock) db.today_lock = blank().today_lock;
+    if (!db.game) db.game = blank().game;
     return db;
   }
   let seq = db.seq || 1; const p = db.profile || {}; const events = [];
@@ -60,6 +65,7 @@ function migrate(db) {
     seq, accounts: db.accounts || [], events, goals: (db.goals || []).map(g => ({ target_date: "", ...g })), purchases: db.purchases || [], saves: db.saves || [], conversations: db.conversations || [],
     savings: { roth_auto: p.roth_auto || false, roth_ytd: p.roth_ytd || 0, roth_limit: p.roth_limit || 7500, roth_monthly: p.roth_monthly || 0, k401_monthly: p.k401_monthly || 0, emergency_monthly: 0, emergency_target: p.emergency_fund_target || 0, emergency_date: "" },
     profile: { credit_score: p.credit_score || 0, priorities: p.priorities || "", anthropic_key: p.anthropic_key || "", annual_salary_pretax: p.annual_salary_pretax || 0 },
+    today_lock: blank().today_lock, game: blank().game,
   };
 }
 let DB = (() => { try { const raw = JSON.parse(localStorage.getItem(DB_KEY)); return raw ? migrate(raw) : blank(); } catch { return blank(); } })();
@@ -135,27 +141,15 @@ function dailyTargets(emergencySaved, ccBalance) {
   return t;
 }
 
-function snapshot() {
-  const a = DB.accounts;
-  const assets = a.filter(x => !x.is_liability).reduce((s, x) => s + x.balance, 0);
-  const liabilities = a.filter(x => x.is_liability).reduce((s, x) => s + x.balance, 0);
-  // Spendable cash = checking only. Savings is treated as protected (emergency) money,
-  // so moving cash into it actually lowers what you can spend.
-  const liquid = a.filter(x => x.type === "checking" && !x.is_liability).reduce((s, x) => s + x.balance, 0);
-  const emergencySaved = a.filter(x => x.type === "savings" && !x.is_liability).reduce((s, x) => s + x.balance, 0);
-  const totalLiquid = liquid + emergencySaved;
-  const todayI = isoToday();
-  const spentToday = DB.purchases.filter(p => p.was_made && p.occurred_at === todayI).reduce((s, p) => s + p.amount, 0);
-  const savedToday = (DB.saves || []).filter(x => x.date === todayI).reduce((s, x) => s + x.amount, 0);
-  const ccBalance = a.filter(x => x.type === "credit_card").reduce((s, x) => s + x.balance, 0);
-
-  const today0 = midnight();
-  const hasIncome = !!nextIncomeAfter(today0);
-  const nextInc = nextIncomeAfter(today0);
-  const nextPayDate = nextInc ? nextInc.date : addDays(today0, 30);
-  const runwayDays = Math.max(1, daysBetween(today0, nextPayDate));
-  const winExpenses = sumOcc(today0, nextPayDate, e => e.kind === "expense");
-  const winIncome = occurrences(today0, nextPayDate, e => e.kind === "income").filter(o => o.date > today0 && o.date < nextPayDate).reduce((s, o) => s + o.amount, 0);
+// Core runway/targets math, anchored at any reference date — today for the live
+// dashboard, or a future date so Decide can check "if I buy this on day X".
+function projectFrom(refDate, liquidAtRef, emergencySaved, ccBalance) {
+  const hasIncome = !!nextIncomeAfter(refDate);
+  const nextInc = nextIncomeAfter(refDate);
+  const nextPayDate = nextInc ? nextInc.date : addDays(refDate, 30);
+  const runwayDays = Math.max(1, daysBetween(refDate, nextPayDate));
+  const winExpenses = sumOcc(refDate, nextPayDate, e => e.kind === "expense");
+  const winIncome = occurrences(refDate, nextPayDate, e => e.kind === "income").filter(o => o.date > refDate && o.date < nextPayDate).reduce((s, o) => s + o.amount, 0);
 
   // Reserve for the paycheck-after if it can't cover its own bills (e.g. rent on payday)
   const nextInc2 = hasIncome ? nextIncomeAfter(nextPayDate) : null;
@@ -164,7 +158,7 @@ function snapshot() {
   const win2incExtra = occurrences(nextPayDate, win2end, e => e.kind === "income").filter(o => o.date > nextPayDate).reduce((s, o) => s + o.amount, 0);
   const reserveForNext = Math.max(0, win2exp - ((hasIncome ? nextInc.amount : 0) + win2incExtra));
 
-  const freeOverRunway = liquid + winIncome - winExpenses - reserveForNext;
+  const freeOverRunway = liquidAtRef + winIncome - winExpenses - reserveForNext;
   const freeDaily = freeOverRunway / runwayDays;
   const shortBeforePay = Math.max(0, -freeOverRunway);
 
@@ -187,15 +181,59 @@ function snapshot() {
   };
 
   return {
-    accounts: a, assets, liabilities, net_worth: assets - liabilities, liquid, total_liquid: totalLiquid, emergency_saved: emergencySaved, cc_balance: ccBalance,
-    spent_today: spentToday, saved_today: savedToday,
+    liquid: liquidAtRef, emergency_saved: emergencySaved, cc_balance: ccBalance,
     has_income: hasIncome, next_payday: isoOf(nextPayDate), runway_days: runwayDays, win_expenses: winExpenses,
     free_over_runway: freeOverRunway, free_daily: freeDaily, short_before_pay: shortBeforePay, reserve_for_next: reserveForNext,
     targets, ideal_daily: idealDaily, save_today: saveDaily, spend_today: spendDaily, underfunded, over_allocated: overAllocated,
     period_remaining: Math.max(0, spendDaily * runwayDays), next_pay: nextPay,
+  };
+}
+
+// Once today's logged spend/save actually reaches its target, freeze that target
+// (and flag it so the UI can show a checkmark) instead of letting it keep recomputing —
+// otherwise saving into a Roth lowers liquid, which lowers the very targets you just hit.
+// Resets automatically the moment the calendar date moves on.
+function applyTodayLock(savedToday, spentToday, proj) {
+  const t = DB.today_lock, today = isoToday(); let dirty = false;
+  if (t.date !== today) { t.date = today; t.save_hit = false; t.save_value = 0; t.spend_hit = false; t.spend_value = 0; dirty = true; }
+  if (!t.save_hit && proj.save_today > 0 && savedToday >= proj.save_today) { t.save_hit = true; t.save_value = proj.save_today; dirty = true; }
+  if (!t.spend_hit && proj.spend_today > 0 && spentToday >= proj.spend_today) { t.spend_hit = true; t.spend_value = proj.spend_today; dirty = true; }
+  if (dirty) save();
+  return { save_today: t.save_hit ? t.save_value : proj.save_today, save_locked: t.save_hit, spend_today: t.spend_hit ? t.spend_value : proj.spend_today, spend_locked: t.spend_hit };
+}
+
+function snapshot() {
+  const a = DB.accounts;
+  const assets = a.filter(x => !x.is_liability).reduce((s, x) => s + x.balance, 0);
+  const liabilities = a.filter(x => x.is_liability).reduce((s, x) => s + x.balance, 0);
+  // Spendable cash = checking only. Savings is treated as protected (emergency) money,
+  // so moving cash into it actually lowers what you can spend.
+  const liquid = a.filter(x => x.type === "checking" && !x.is_liability).reduce((s, x) => s + x.balance, 0);
+  const emergencySaved = a.filter(x => x.type === "savings" && !x.is_liability).reduce((s, x) => s + x.balance, 0);
+  const totalLiquid = liquid + emergencySaved;
+  const todayI = isoToday();
+  const spentToday = DB.purchases.filter(p => p.was_made && p.occurred_at === todayI).reduce((s, p) => s + p.amount, 0);
+  const savedToday = (DB.saves || []).filter(x => x.date === todayI).reduce((s, x) => s + x.amount, 0);
+  const ccBalance = a.filter(x => x.type === "credit_card").reduce((s, x) => s + x.balance, 0);
+  const proj = projectFrom(midnight(), liquid, emergencySaved, ccBalance);
+  const lock = applyTodayLock(savedToday, spentToday, proj);
+
+  return {
+    accounts: a, assets, liabilities, net_worth: assets - liabilities, total_liquid: totalLiquid,
+    spent_today: spentToday, saved_today: savedToday,
+    ...proj, save_today: lock.save_today, save_locked: lock.save_locked, spend_today: lock.spend_today, spend_locked: lock.spend_locked,
     emergency_target: DB.savings.emergency_target || 0, emergency_pct: (DB.savings.emergency_target > 0) ? Math.min(1, emergencySaved / DB.savings.emergency_target) : (emergencySaved > 0 ? 1 : 0),
     has_setup: DB.events.some(e => e.kind === "income") || a.length > 0,
   };
+}
+
+// Same engine, anchored at a future date — what your budget looks like if you buy on that day.
+function snapshotAt(date) {
+  if (!date || date <= midnight()) return snapshot();
+  const a = DB.accounts;
+  const emergencySaved = a.filter(x => x.type === "savings" && !x.is_liability).reduce((s, x) => s + x.balance, 0);
+  const ccBalance = a.filter(x => x.type === "credit_card").reduce((s, x) => s + x.balance, 0);
+  return projectFrom(date, projectedLiquidAt(date), emergencySaved, ccBalance);
 }
 
 // Forward balance projection from current liquid — shows where money goes & when.
@@ -219,8 +257,8 @@ function projectedLiquidSeries(months) {
 
 function goalEta(remaining, monthly) { if (monthly <= 0 || remaining <= 0) return [null, null]; const months = Math.ceil(remaining / monthly), d = _d(); return [months, isoOf(new Date(d.getFullYear(), d.getMonth() + months, Math.min(d.getDate(), 28)))]; }
 
-function decide(amount, category = "other", isDisc = true) {
-  const snap = snapshot(); amount = Number(amount);
+function decide(amount, category = "other", isDisc = true, date = null) {
+  const snap = date ? snapshotAt(new Date(date + "T00:00:00")) : snapshot(); amount = Number(amount);
   const remaining = snap.period_remaining, reasons = []; let verdict = "yes", toCredit = 0;
   const afterPay = (snap.has_income ? snap.next_pay.amount : 0);
 
@@ -246,7 +284,7 @@ function decide(amount, category = "other", isDisc = true) {
   return { verdict, amount, reasons, goal_impacts: impacts, workarounds: wa, snap, to_credit: toCredit, is_disc: isDisc, has_budget: remaining > 0 };
 }
 
-function logPurchase(description, amount, category, disc, verdict, was_made) {
+function logPurchase(description, amount, category, disc, verdict, was_made, date) {
   let account_id = null, toCredit = 0;
   if (was_made) {
     let remaining = amount;
@@ -255,7 +293,7 @@ function logPurchase(description, amount, category, disc, verdict, was_made) {
     for (const acct of checkingAccts) { if (remaining <= 0.005) break; const take = Math.min(acct.balance, remaining); acct.balance -= take; remaining -= take; if (!account_id) account_id = acct.id; }
     if (remaining > 0.005) { const card = DB.accounts.find(a => a.type === "credit_card"); if (card) { card.balance += remaining; toCredit = remaining; } else if (checkingAccts[0]) { checkingAccts[0].balance -= remaining; account_id = checkingAccts[0].id; } }
   }
-  DB.purchases.push({ id: nextId(), description, amount, category, is_discretionary: disc, verdict, was_made, account_id, to_credit: toCredit, occurred_at: isoToday() });
+  DB.purchases.push({ id: nextId(), description, amount, category, is_discretionary: disc, verdict, was_made, account_id, to_credit: toCredit, occurred_at: date || isoToday() });
   save(); switchTab("dashboard");
 }
 
@@ -279,9 +317,9 @@ const state = {
   tab: "dashboard", convId: null, editAccount: null, editGoal: null,
   decideView: "check", calYear: null, calMonth: null, schedSel: null, editEvent: null, whatIfMonthly: 200,
   outlookMetric: "net", outlookDays: 30,
-  decide: { desc: "", amount: "", category: "shopping", disc: 1 },
+  decide: { desc: "", amount: "", category: "shopping", disc: 1, date: "" },
 };
-function captureTabState() { if (state.tab === "decide" && state.decideView === "check" && $("#d-amt")) state.decide = { desc: $("#d-desc").value, amount: $("#d-amt").value, category: $("#d-cat").value, disc: state.decideDisc ?? state.decide.disc }; }
+function captureTabState() { if (state.tab === "decide" && state.decideView === "check" && $("#d-amt")) state.decide = { desc: $("#d-desc").value, amount: $("#d-amt").value, category: $("#d-cat").value, date: $("#d-date").value, disc: state.decideDisc ?? state.decide.disc }; }
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.tab)));
 function switchTab(tab) { captureTabState(); state.tab = tab; document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab)); render(); }
 function refreshNetWorth() { $("#networth-pill").textContent = money0(snapshot().net_worth); }
@@ -295,7 +333,7 @@ function miniCalendar(jumpToCal) {
   const today = _d(), y = today.getFullYear(), m0 = today.getMonth(), dim = daysInMonth(y, m0 + 1), mStart = new Date(y, m0, 1), mEnd = new Date(y, m0 + 1, 1);
   const occ = occurrences(mStart, mEnd), byDay = {};
   occ.forEach(o => { (byDay[o.date.getDate()] = byDay[o.date.getDate()] || []).push(o); });
-  DB.purchases.filter(p => p.was_made && String(p.occurred_at).slice(0, 7) === `${y}-${pad(m0 + 1)}`).forEach(p => { const dd = +p.occurred_at.slice(8, 10); (byDay[dd] = byDay[dd] || []).push({ ev: { kind: "spent" } }); });
+  DB.purchases.filter(p => p.was_made && String(p.occurred_at).slice(0, 7) === `${y}-${pad(m0 + 1)}`).forEach(p => { const dd = +p.occurred_at.slice(8, 10); (byDay[dd] = byDay[dd] || []).push({ ev: { kind: "expense" } }); });
   const wrap = el(`<div class="section"></div>`);
   wrap.append(el(`<div class="cal-hd">${["S", "M", "T", "W", "T", "F", "S"].map(x => `<span>${x}</span>`).join("")}</div>`));
   const grid = el(`<div class="cal mini"></div>`);
@@ -304,7 +342,6 @@ function miniCalendar(jumpToCal) {
     const dl = byDay[day] || [], dots = [];
     if (dl.some(o => o.ev.kind === "income")) dots.push(`<i class="cal-dot pay"></i>`);
     if (dl.some(o => o.ev.kind === "expense")) dots.push(`<i class="cal-dot due"></i>`);
-    if (dl.some(o => o.ev.kind === "spent")) dots.push(`<i class="cal-dot spent"></i>`);
     const cell = el(`<div class="cal-d ${day === today.getDate() ? "today" : ""}">${day}<div class="cal-dots">${dots.join("")}</div></div>`);
     cell.addEventListener("click", () => { state.calYear = y; state.calMonth = m0; state.schedSel = day; switchTab("schedule"); });
     grid.append(cell);
@@ -431,7 +468,7 @@ function renderDashboard(v) {
 
   // Today — the two target numbers
   v.append(el(`<div class="group-label">Today${d.has_income ? " · until " + fmtDate(d.next_payday) : ""}</div>`));
-  v.append(el(`<div class="stats"><div class="s"><div class="k">Spend</div><div class="v ${d.spend_today <= 0 ? "down" : ""}">${money0(d.spend_today)}</div></div><div class="s"><div class="k">Save</div><div class="v up">${money0(d.save_today)}</div></div><div class="s"><div class="k">Cash now</div><div class="v">${money0(d.liquid)}</div></div></div>`));
+  v.append(el(`<div class="stats"><div class="s"><div class="k">Spend${d.spend_locked ? `<span class="chk">${ICONS.check}</span>` : ""}</div><div class="v ${d.spend_today <= 0 ? "down" : ""}">${money0(d.spend_today)}</div></div><div class="s"><div class="k">Save${d.save_locked ? `<span class="chk">${ICONS.check}</span>` : ""}</div><div class="v up">${money0(d.save_today)}</div></div><div class="s"><div class="k">Cash now</div><div class="v">${money0(d.liquid)}</div></div></div>`));
   if (d.short_before_pay > 0)
     v.append(el(`<div class="warn-box"><div class="wb-title">Short before payday</div>Your ${money0(d.liquid)} cash won't cover ${money0(d.win_expenses)} of bills due before ${fmtDate(d.next_payday)} — about ${money0(d.short_before_pay)} short. Anything you spend now goes on your card; clear it after payday.</div>`));
   else {
@@ -450,6 +487,9 @@ function renderDashboard(v) {
   // Today's progress — what you've actually spent & saved (drives tomorrow's recalibration)
   v.append(el(`<div class="group-label">Logged today</div>`));
   v.append(el(`<div class="stats"><div class="s"><div class="k">Spent</div><div class="v ${d.spent_today > 0 ? "down" : ""}">${money0(d.spent_today)}</div></div><div class="s"><div class="k">Saved</div><div class="v ${d.saved_today > 0 ? "up" : ""}">${money0(d.saved_today)}</div></div></div>`));
+  const eform = el(`<div class="section"><div class="two"><label class="field"><span>I spent</span><input id="le-amt" type="number" inputmode="decimal" placeholder="0" /></label><label class="field"><span>on</span><select id="le-cat">${CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join("")}</select></label></div><button class="btn secondary" id="le-go">Log it</button></div>`);
+  v.append(eform);
+  $("#le-go", eform).addEventListener("click", () => { const amt = +$("#le-amt", eform).value || 0, cat = $("#le-cat", eform).value; if (amt > 0) logPurchase(cat, amt, cat, true, null, true, isoToday()); });
   const destAccts = DB.accounts.filter(a => ["savings", "roth", "401k", "brokerage"].includes(a.type));
   if (destAccts.length) {
     const sform = el(`<div class="section"><div class="two"><label class="field"><span>I saved</span><input id="ls-amt" type="number" inputmode="decimal" placeholder="0" /></label><label class="field"><span>into</span><select id="ls-dest">${destAccts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("")}</select></label></div><button class="btn secondary" id="ls-go">Log it</button></div>`);
@@ -483,6 +523,26 @@ const LIABILITY_TYPES = ["credit_card", "student_loan", "loan"];
 const typeLabel = t => (ACCOUNT_TYPES.find(x => x[0] === t) || [t, t])[1];
 const acctGlyph = t => GLYPH[TYPE_GLYPH[t] || "cash"];
 
+// Expense categories — shared by Decide, the home quick-log, and the category wheel.
+const CATEGORIES = ["shopping", "dining", "entertainment", "travel", "subscriptions", "gadgets", "health", "sport", "fitness", "essentials", "other"];
+const CAT_COLOR = { shopping: "#7aa2ff", dining: "#ff9f5a", entertainment: "#c792ea", travel: "#5ad1cf", subscriptions: "#ffd166", gadgets: "#8a8fff", health: "#ff6b8b", sport: "#6bd17a", fitness: "#4fc3f7", essentials: "#cfd3d8", other: "#8a8d93" };
+const catColor = c => CAT_COLOR[c] || CAT_COLOR.other;
+
+// ---------- shared undo (History + Calendar day view both revert the same way) ----------
+function revertPurchase(p) {
+  const a = DB.accounts.find(x => x.id === p.account_id) || DB.accounts.find(x => x.type === "checking") || DB.accounts.find(x => LIQUID_TYPES.includes(x.type));
+  if (a) a.balance += (p.amount - (p.to_credit || 0));
+  if (p.to_credit > 0) { const c = DB.accounts.find(x => x.type === "credit_card"); if (c) c.balance -= p.to_credit; }
+  DB.purchases = DB.purchases.filter(x => x.id !== p.id);
+}
+function revertSave(x) {
+  const dest = DB.accounts.find(a => a.id === x.account_id), chk = DB.accounts.find(a => a.type === "checking");
+  if (dest) dest.balance -= x.amount;
+  if (chk) chk.balance += x.amount;
+  if (dest && dest.type === "roth") DB.savings.roth_ytd = Math.max(0, (DB.savings.roth_ytd || 0) - x.amount);
+  DB.saves = DB.saves.filter(z => z.id !== x.id);
+}
+
 // ============================================================================
 //  CALENDAR — input surface; events vs running liquidity
 // ============================================================================
@@ -501,7 +561,7 @@ function renderCalendar(v) {
 
   const occ = occurrences(mStart, mEnd), byDay = {};
   occ.forEach(o => { (byDay[o.date.getDate()] = byDay[o.date.getDate()] || []).push(o); });
-  const spent = {}; DB.purchases.filter(p => p.was_made && String(p.occurred_at).slice(0, 7) === `${y}-${pad(m0 + 1)}`).forEach(p => { const dd = +p.occurred_at.slice(8, 10); spent[dd] = (spent[dd] || 0) + p.amount; });
+  DB.purchases.filter(p => p.was_made && String(p.occurred_at).slice(0, 7) === `${y}-${pad(m0 + 1)}`).forEach(p => { const dd = +p.occurred_at.slice(8, 10); (byDay[dd] = byDay[dd] || []).push({ ev: { kind: "expense" } }); });
 
   v.append(el(`<div class="cal-hd">${["S", "M", "T", "W", "T", "F", "S"].map(x => `<span>${x}</span>`).join("")}</div>`));
   const grid = el(`<div class="cal"></div>`);
@@ -510,13 +570,12 @@ function renderCalendar(v) {
     const dl = byDay[day] || [], dots = [];
     if (dl.some(o => o.ev.kind === "income")) dots.push(`<i class="cal-dot pay"></i>`);
     if (dl.some(o => o.ev.kind === "expense")) dots.push(`<i class="cal-dot due"></i>`);
-    if (spent[day]) dots.push(`<i class="cal-dot spent"></i>`);
     const cell = el(`<div class="cal-d ${isCur && day === today.getDate() ? "today" : ""} ${state.schedSel === day ? "sel" : ""}">${day}<div class="cal-dots">${dots.join("")}</div></div>`);
     cell.addEventListener("click", () => { state.schedSel = state.schedSel === day ? null : day; state.editEvent = null; render(); });
     grid.append(cell);
   }
   v.append(grid);
-  v.append(el(`<div class="legend" style="margin-top:12px"><span><i style="background:var(--up)"></i>Income</span><span><i style="background:var(--down)"></i>Expense</span><span><i style="background:var(--text)"></i>Spent</span></div>`));
+  v.append(el(`<div class="legend" style="margin-top:12px"><span><i style="background:var(--up)"></i>Income</span><span><i style="background:var(--down)"></i>Expense</span></div>`));
   if (!isCur) v.append(el(`<div class="note">Projected cash entering ${mLong}: <b>${money0(projectedLiquidAt(mStart))}</b> — from scheduled income & bills only.</div>`));
   else v.append(el(`<div class="note">Tap a day to add or edit. Your balances + these events drive your spend & save numbers.</div>`));
 
@@ -534,8 +593,8 @@ function renderCalendar(v) {
       });
       v.append(row);
     });
-    DB.purchases.filter(p => p.was_made && p.occurred_at === dayIso).forEach(p => { const row = el(`<div class="row"><div class="left"><span class="name">${escapeHtml(p.description)}</span><span class="meta">spent${p.to_credit > 0 ? " · " + money0(p.to_credit) + " on card" : ""}</span></div><div style="display:flex;align-items:center;gap:14px"><span class="v down">−${money0(p.amount)}</span><button class="del">×</button></div></div>`); $(".del", row).addEventListener("click", () => { if (!confirm(`Refund ${money(p.amount)} and remove?`)) return; const a = DB.accounts.find(x => x.id === p.account_id) || DB.accounts.find(x => x.type === "checking"); if (a) a.balance += (p.amount - (p.to_credit || 0)); if (p.to_credit > 0) { const c = DB.accounts.find(x => x.type === "credit_card"); if (c) c.balance -= p.to_credit; } DB.purchases = DB.purchases.filter(x => x.id !== p.id); save(); render(); }); v.append(row); });
-    (DB.saves || []).filter(x => x.date === dayIso).forEach(x => { const row = el(`<div class="row"><div class="left"><span class="name">Saved to ${escapeHtml(x.dest || "savings")}</span><span class="meta">moved from checking</span></div><div style="display:flex;align-items:center;gap:14px"><span class="v up">+${money0(x.amount)}</span><button class="del">×</button></div></div>`); $(".del", row).addEventListener("click", () => { if (!confirm("Undo this save?")) return; const dest = DB.accounts.find(a => a.id === x.account_id), chk = DB.accounts.find(a => a.type === "checking"); if (dest) dest.balance -= x.amount; if (chk) chk.balance += x.amount; if (dest && dest.type === "roth") DB.savings.roth_ytd = Math.max(0, (DB.savings.roth_ytd || 0) - x.amount); DB.saves = DB.saves.filter(z => z.id !== x.id); save(); render(); }); v.append(row); });
+    DB.purchases.filter(p => p.was_made && p.occurred_at === dayIso).forEach(p => { const row = el(`<div class="row"><div class="left"><span class="name">${escapeHtml(p.description)}</span><span class="meta">${p.category} · spent${p.to_credit > 0 ? " · " + money0(p.to_credit) + " on card" : ""}</span></div><div style="display:flex;align-items:center;gap:14px"><span class="v down">−${money0(p.amount)}</span><button class="del">×</button></div></div>`); $(".del", row).addEventListener("click", () => { if (!confirm(`Refund ${money(p.amount)} and remove?`)) return; revertPurchase(p); save(); render(); }); v.append(row); });
+    (DB.saves || []).filter(x => x.date === dayIso).forEach(x => { const row = el(`<div class="row"><div class="left"><span class="name">Saved to ${escapeHtml(x.dest || "savings")}</span><span class="meta">moved from checking</span></div><div style="display:flex;align-items:center;gap:14px"><span class="v up">+${money0(x.amount)}</span><button class="del">×</button></div></div>`); $(".del", row).addEventListener("click", () => { if (!confirm("Undo this save?")) return; revertSave(x); save(); render(); }); v.append(row); });
     v.append(eventForm(dayIso, state.editEvent));
   }
 
@@ -582,28 +641,29 @@ function renderCheckInto(v) {
   const c = state.decide;
   const form = el(`<div class="section">
     <label class="field"><span>What is it?</span><input id="d-desc" placeholder="New swim fins" value="${escapeHtml(c.desc || "")}" /></label>
-    <div class="two"><label class="field"><span>Amount</span><input id="d-amt" type="number" inputmode="decimal" placeholder="0" value="${c.amount || ""}" /></label><label class="field"><span>Category</span><select id="d-cat">${["shopping", "dining", "entertainment", "travel", "subscriptions", "gadgets", "health", "sport", "fitness", "essentials", "other"].map(x => `<option ${x === (c.category || "shopping") ? "selected" : ""}>${x}</option>`).join("")}</select></label></div>
+    <label class="field"><span>Amount</span><input id="d-amt" type="number" inputmode="decimal" placeholder="0" value="${c.amount || ""}" /></label>
+    <div class="two"><label class="field"><span>Category</span><select id="d-cat">${CATEGORIES.map(x => `<option ${x === (c.category || "shopping") ? "selected" : ""}>${x}</option>`).join("")}</select></label><label class="field"><span>Date</span><input id="d-date" type="date" min="${isoToday()}" value="${c.date || isoToday()}" /></label></div>
     <div class="seg" id="d-type"><button class="${(c.disc ?? 1) ? 'on' : ''}" data-disc="1">Want</button><button class="${(c.disc ?? 1) ? '' : 'on'}" data-disc="0">Need</button></div>
     <button class="btn" id="d-go">Check it</button>
   </div>`);
   v.append(form); const result = el(`<div id="d-result"></div>`); v.append(result);
   state.decideDisc = c.disc ?? 1;
   form.querySelectorAll("#d-type button").forEach(b => b.addEventListener("click", () => { state.decideDisc = Number(b.dataset.disc); form.querySelectorAll("#d-type button").forEach(x => x.classList.toggle("on", x === b)); }));
-  $("#d-go", form).addEventListener("click", () => { const amount = parseFloat($("#d-amt", form).value); if (!amount || amount <= 0) { result.innerHTML = `<div class="empty">Enter an amount.</div>`; return; } if (!DB.accounts.length) { result.innerHTML = `<div class="empty">Add your accounts in Manage first.</div>`; return; } renderVerdict(result, amount, $("#d-desc", form).value.trim() || $("#d-cat", form).value, $("#d-cat", form).value, !!state.decideDisc); });
+  $("#d-go", form).addEventListener("click", () => { const amount = parseFloat($("#d-amt", form).value); if (!amount || amount <= 0) { result.innerHTML = `<div class="empty">Enter an amount.</div>`; return; } if (!DB.accounts.length) { result.innerHTML = `<div class="empty">Add your accounts in Manage first.</div>`; return; } const date = $("#d-date", form).value || isoToday(); renderVerdict(result, amount, $("#d-desc", form).value.trim() || $("#d-cat", form).value, $("#d-cat", form).value, !!state.decideDisc, date); });
 }
-async function renderVerdict(c, amount, desc, category, disc) {
-  const r = decide(amount, category, disc), s = r.snap;
+async function renderVerdict(c, amount, desc, category, disc, date) {
+  const r = decide(amount, category, disc, date), s = r.snap, future = date && date !== isoToday();
   const sub = { yes: "Aligns with your plan.", caution: "You can — but it costs you.", veto: "Beyond your means right now." };
   c.innerHTML = "";
-  const verdictEl = el(`<div class="verdict"><div class="word ${r.verdict}">${r.verdict.toUpperCase()}</div><div class="sub">${sub[r.verdict]} · ${money(amount)}</div></div>`); c.append(verdictEl);
-  c.append(el(`<div class="stats"><div class="s"><div class="k">This buy</div><div class="v down">${money0(amount)}</div></div><div class="s"><div class="k">Spend room</div><div class="v">${money0(s.period_remaining)}</div></div><div class="s"><div class="k">${r.to_credit > 0 ? "On card" : "Liquid"}</div><div class="v ${r.to_credit > 0 ? "down" : ""}">${money0(r.to_credit > 0 ? r.to_credit : s.liquid)}</div></div></div>`));
+  const verdictEl = el(`<div class="verdict"><div class="word ${r.verdict}">${r.verdict.toUpperCase()}</div><div class="sub">${sub[r.verdict]} · ${money(amount)}${future ? " · " + fmtDate(date) : ""}</div></div>`); c.append(verdictEl);
+  c.append(el(`<div class="stats"><div class="s"><div class="k">This buy</div><div class="v down">${money0(amount)}</div></div><div class="s"><div class="k">Spend room</div><div class="v">${money0(s.period_remaining)}</div></div><div class="s"><div class="k">${r.to_credit > 0 ? "On card" : (future ? "Liquid then" : "Liquid")}</div><div class="v ${r.to_credit > 0 ? "down" : ""}">${money0(r.to_credit > 0 ? r.to_credit : s.liquid)}</div></div></div>`));
   const why = el(`<div class="section"><div class="group-label">Why</div><ul class="reasons" id="why-list"></ul></div>`); r.reasons.slice(0, 3).forEach(x => $("#why-list", why).append(el(`<li>${x}</li>`))); c.append(why);
   const slips = r.goal_impacts.filter(g => g.delay_days > 0);
   if (slips.length) { const gi = el(`<div class="section"><div class="group-label">Slows your goals</div></div>`); slips.forEach(g => gi.append(el(`<div class="impact"><div class="left"><span class="name">${escapeHtml(g.name)}</span></div><span class="delay down">+${g.delay_days}d → ${fmtDate(g.eta_after)}</span></div>`))); c.append(gi); }
   const actions = el(`<div class="section"><div class="group-label">Log it</div><div class="btn-row"></div></div>`);
   const made = el(`<button class="btn">${r.to_credit > 0 ? "Bought it (on card)" : "Bought it"}</button>`), skipped = el(`<button class="btn secondary">Skipped — saved ${money0(amount)}</button>`);
-  made.addEventListener("click", () => logPurchase(desc, amount, category, disc, r.verdict, true));
-  skipped.addEventListener("click", () => logPurchase(desc, amount, category, disc, r.verdict, false));
+  made.addEventListener("click", () => logPurchase(desc, amount, category, disc, r.verdict, true, date));
+  skipped.addEventListener("click", () => logPurchase(desc, amount, category, disc, r.verdict, false, date));
   $(".btn-row", actions).append(made, skipped); c.append(actions);
   if (DB.profile.anthropic_key) { const ai = el(`<div class="section"><div class="group-label">Coach's take</div><div class="bubble assistant" id="ai-take">Thinking…</div></div>`); c.insertBefore(ai, actions); const res = await aiDecide(desc, amount, category, disc, r); if (res) { if (["yes", "caution", "veto"].includes(res.verdict)) { verdictEl.querySelector(".word").className = `word ${res.verdict}`; verdictEl.querySelector(".word").textContent = res.verdict.toUpperCase(); verdictEl.querySelector(".sub").textContent = `${sub[res.verdict]} · ${money(amount)}`; } $("#ai-take", ai).textContent = res.text; } else ai.remove(); }
 }
@@ -612,31 +672,23 @@ async function renderVerdict(c, amount, desc, category, disc) {
 function coachReplyRules(text) { const snap = snapshot(), m = text.match(/\$?\s*([\d][\d,]*(?:\.\d+)?)/); if (m) { const amt = parseFloat(m[1].replace(/,/g, "")); if (amt > 0) { const r = decide(amt, "other", true); return `${r.verdict.toUpperCase()} on ${money(amt)}.\n${r.reasons[0]}`; } } return `Liquid ${money0(snap.liquid)} · spend ${money0(snap.spend_today)}/day, save ${money0(snap.save_today)}/day until ${fmtDate(snap.next_payday)}.\n\nGive me a price and I'll weigh it.`; }
 function buildSystemPrompt() {
   const s = snapshot(), p = DB.profile;
-  const inc = DB.events.filter(e => e.kind === "income").map(e => `  - ${e.name}: ${money(e.amount)} ${recurLabel(e.recur)}`).join("\n") || "  none";
-  const exp = DB.events.filter(e => e.kind === "expense").map(e => `  - ${e.name}: ${money(e.amount)} ${recurLabel(e.recur)}${e.flex ? " (flexible)" : " (fixed)"}`).join("\n") || "  none";
-  const tg = s.targets.map(t => `  - ${t.label}: needs ${money(t.daily)}/day, funding ${money(t.funded)}/day`).join("\n") || "  none";
-  return `You are a direct, numbers-first personal financial coach. Be concise.
+  const inc = DB.events.filter(e => e.kind === "income").map(e => `${e.name} ${money(e.amount)} ${recurLabel(e.recur)}`).join("; ") || "none";
+  const exp = DB.events.filter(e => e.kind === "expense").map(e => `${e.name} ${money(e.amount)} ${recurLabel(e.recur)}${e.flex ? "(flex)" : ""}`).join("; ") || "none";
+  const tg = s.targets.map(t => `${t.label} ${money(t.funded)}/${money(t.daily)}`).join("; ") || "none";
+  return `Direct, numbers-first finance coach. Concise.
 
-NOW:
-- Net worth ${money(s.net_worth)} | Liquid ${money(s.liquid)} | Card balance ${money(s.cc_balance)}
-- Spend ${money(s.spend_today)}/day, save ${money(s.save_today)}/day until next paycheck ${s.next_payday} (${s.runway_days}d)
-- ${money(s.liquid)} cash − ${money(s.win_expenses)} bills due before payday${s.short_before_pay > 0 ? ` → ${money(s.short_before_pay)} SHORT (will use credit)` : ""}
+NOW: net ${money(s.net_worth)} | liquid ${money(s.liquid)} | card ${money(s.cc_balance)} | spend/day ${money(s.spend_today)} | save/day ${money(s.save_today)} | payday ${s.next_payday} (${s.runway_days}d)${s.short_before_pay > 0 ? ` | SHORT ${money(s.short_before_pay)} (credit)` : ""}
+SAVE TARGETS (funded/needed): ${tg}
+INCOME: ${inc}
+EXPENSES: ${exp}
+PRIORITIES: ${p.priorities || "none"}
 
-DAILY SAVE TARGETS:
-${tg}
-
-INCOME:
-${inc}
-
-EXPENSES:
-${exp}
-
-PRIORITIES: ${p.priorities || "not specified"}
-
-Flexible expenses can be trimmed; fixed are committed. Spending is never forced to $0 — savings throttle instead.`;
+Flex expenses trim first; fixed are committed. Spend never forced to $0 — savings throttle instead.`;
 }
-async function callClaude(messages, system, maxTokens = 500) { const key = DB.profile.anthropic_key; if (!key) return null; const resp = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: maxTokens, system, messages }) }); if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e?.error?.message || `HTTP ${resp.status}`); } const data = await resp.json(); return data.content?.[0]?.text || null; }
-async function aiDecide(desc, amount, category, disc, r) { const s = r.snap; const sys = buildSystemPrompt() + `\n\nJudging ONE purchase. Reply EXACTLY:\nLine 1: YES, CAUTION, or VETO.\nThen ≤2 short sentences weighing priorities/goals. Numbers. No preamble.`; const ctx = `Buy: ${desc} — ${money(amount)} (${category}, ${disc ? "want" : "need"}). Spend room ${money(s.period_remaining)} until ${s.next_payday}. ${r.to_credit > 0 ? money(r.to_credit) + " would go on card." : ""} Math says ${r.verdict.toUpperCase()}.`; try { const txt = await callClaude([{ role: "user", content: ctx }], sys, 200); if (!txt) return null; const first = txt.trim().split(/\s|\n/)[0].toLowerCase().replace(/[^a-z]/g, ""); return { verdict: ["yes", "caution", "veto"].includes(first) ? first : r.verdict, text: txt.trim().replace(/^(yes|caution|veto)[\s:.\-—]*/i, "").trim() || txt.trim() }; } catch (e) { return { verdict: r.verdict, text: `(AI unavailable: ${e.message})` }; } }
+// system is cached server-side (Anthropic prompt caching) so repeat turns in one
+// conversation re-bill only the new message, not the whole financial picture again.
+async function callClaude(messages, system, maxTokens = 500) { const key = DB.profile.anthropic_key; if (!key) return null; const resp = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: maxTokens, system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }], messages }) }); if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e?.error?.message || `HTTP ${resp.status}`); } const data = await resp.json(); return data.content?.[0]?.text || null; }
+async function aiDecide(desc, amount, category, disc, r) { const s = r.snap; const sys = buildSystemPrompt() + `\n\nJudge ONE purchase. Line 1: YES, CAUTION, or VETO. Then ≤2 short sentences, numbers, no preamble.`; const ctx = `Buy: ${desc} — ${money(amount)} (${category}, ${disc ? "want" : "need"}). Spend room ${money(s.period_remaining)} until ${s.next_payday}. ${r.to_credit > 0 ? money(r.to_credit) + " would go on card." : ""} Math says ${r.verdict.toUpperCase()}.`; try { const txt = await callClaude([{ role: "user", content: ctx }], sys, 200); if (!txt) return null; const first = txt.trim().split(/\s|\n/)[0].toLowerCase().replace(/[^a-z]/g, ""); return { verdict: ["yes", "caution", "veto"].includes(first) ? first : r.verdict, text: txt.trim().replace(/^(yes|caution|veto)[\s:.\-—]*/i, "").trim() || txt.trim() }; } catch (e) { return { verdict: r.verdict, text: `(AI unavailable: ${e.message})` }; } }
 function renderCoachInto(v) {
   const hasAI = !!DB.profile.anthropic_key;
   v.append(el(`<div class="note ${hasAI ? "ok" : ""}" style="margin:2px 0 12px">${hasAI ? "AI coach — knows your full picture" : "Free coach · add a key in Manage for AI"}</div>`));
@@ -654,30 +706,39 @@ function renderCoachInto(v) {
 // ============================================================================
 function renderHistory(v) {
   v.append(el(`<div class="view-title">History</div>`));
-  const ps = [...DB.purchases].sort((a, b) => (b.occurred_at > a.occurred_at ? 1 : -1) || b.id - a.id);
-  if (!ps.length) { v.append(el(`<div class="empty">No decisions logged yet.<br>Use Decide and record what you do.</div>`)); return; }
-  const made = ps.filter(p => p.was_made), saved = ps.filter(p => !p.was_made).reduce((s, p) => s + p.amount, 0);
+  const ps = DB.purchases, sv = DB.saves || [];
+  const all = [...ps.map(p => ({ ...p, _k: "purchase" })), ...sv.map(x => ({ ...x, _k: "save" }))]
+    .sort((a, b) => { const da = a._k === "purchase" ? a.occurred_at : a.date, db = b._k === "purchase" ? b.occurred_at : b.date; return (db > da ? 1 : db < da ? -1 : 0) || b.id - a.id; });
+  if (!all.length) { v.append(el(`<div class="empty">No activity yet.<br>Log a spend or a save from Home or Decide.</div>`)); return; }
+  const made = ps.filter(p => p.was_made), skippedSaved = ps.filter(p => !p.was_made).reduce((s, p) => s + p.amount, 0);
   const byCat = {}; made.forEach(p => byCat[p.category] = (byCat[p.category] || 0) + p.amount);
   const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
   if (cats.length) {
     const max = cats[0][1]; v.append(el(`<div class="group-label">Spending by category</div>`));
     const wrap = el(`<div class="section"></div>`);
-    cats.forEach(([cat, amt]) => wrap.append(el(`<div class="catrow"><span class="cl">${escapeHtml(cat)}</span><span class="ct"><i style="width:${(amt / max * 100).toFixed(0)}%"></i></span><span class="cv">${money0(amt)}</span></div>`)));
+    cats.forEach(([cat, amt]) => wrap.append(el(`<div class="catrow"><span class="cl">${escapeHtml(cat)}</span><span class="ct"><i style="width:${(amt / max * 100).toFixed(0)}%;background:${catColor(cat)}"></i></span><span class="cv">${money0(amt)}</span></div>`)));
     v.append(wrap);
   }
-  if (saved > 0) v.append(el(`<div class="hero" style="padding:18px 0"><div class="label">Saved by skipping</div><div class="num up">${money0(saved)}</div></div>`));
-  v.append(el(`<div class="group-label">All decisions</div>`));
-  ps.forEach(p => {
-    const tag = p.verdict ? `<span class="tag ${p.verdict}">${p.verdict}</span>` : "";
-    const row = el(`<div class="row"><div class="left"><span class="name">${escapeHtml(p.description)}${tag}</span><span class="meta">${p.category} · ${fmtDate(p.occurred_at)} · ${p.was_made ? "spent" : "skipped"}${p.to_credit > 0 ? " · " + money0(p.to_credit) + " on card" : ""}</span></div><div style="display:flex;align-items:center;gap:12px"><span class="v ${p.was_made ? "down" : "up"}">${p.was_made ? "-" : "+"}${money0(p.amount)}</span><button class="del">×</button></div></div>`);
-    $(".del", row).addEventListener("click", () => {
-      if (!confirm(p.was_made ? `Refund ${money(p.amount)} and remove this?` : "Remove this entry?")) return;
-      if (p.was_made) { const a = DB.accounts.find(x => x.id === p.account_id) || DB.accounts.find(x => x.type === "checking") || DB.accounts.find(x => LIQUID_TYPES.includes(x.type)); if (a) a.balance += (p.amount - (p.to_credit || 0)); if (p.to_credit > 0) { const c = DB.accounts.find(x => x.type === "credit_card"); if (c) c.balance -= p.to_credit; } }
-      DB.purchases = DB.purchases.filter(x => x.id !== p.id); save(); render();
-    });
-    v.append(row);
+  if (skippedSaved > 0) v.append(el(`<div class="hero" style="padding:18px 0"><div class="label">Saved by skipping</div><div class="num up">${money0(skippedSaved)}</div></div>`));
+  v.append(el(`<div class="group-label">All activity</div>`));
+  all.forEach(item => {
+    if (item._k === "purchase") {
+      const p = item, tag = p.verdict ? `<span class="tag ${p.verdict}">${p.verdict}</span>` : "";
+      const row = el(`<div class="row"><div class="left"><span class="name">${escapeHtml(p.description)}${tag}</span><span class="meta">${p.category} · ${fmtDate(p.occurred_at)} · ${p.was_made ? "spent" : "skipped"}${p.to_credit > 0 ? " · " + money0(p.to_credit) + " on card" : ""}</span></div><div style="display:flex;align-items:center;gap:12px"><span class="v ${p.was_made ? "down" : "up"}">${p.was_made ? "-" : "+"}${money0(p.amount)}</span><button class="del">×</button></div></div>`);
+      $(".del", row).addEventListener("click", () => {
+        if (!confirm(p.was_made ? `Refund ${money(p.amount)} and remove this?` : "Remove this entry?")) return;
+        if (p.was_made) revertPurchase(p); else DB.purchases = DB.purchases.filter(x => x.id !== p.id);
+        save(); render();
+      });
+      v.append(row);
+    } else {
+      const x = item;
+      const row = el(`<div class="row"><div class="left"><span class="name">Saved to ${escapeHtml(x.dest || "savings")}</span><span class="meta">${fmtDate(x.date)} · moved from checking</span></div><div style="display:flex;align-items:center;gap:12px"><span class="v up">+${money0(x.amount)}</span><button class="del">×</button></div></div>`);
+      $(".del", row).addEventListener("click", () => { if (!confirm("Undo this save?")) return; revertSave(x); save(); render(); });
+      v.append(row);
+    }
   });
-  v.append(el(`<div class="note">× refunds a spend back to your balance.</div>`));
+  v.append(el(`<div class="note">× undoes an entry and restores balances.</div>`));
 }
 
 // ============================================================================

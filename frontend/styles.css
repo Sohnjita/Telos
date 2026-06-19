@@ -212,6 +212,8 @@ select { -webkit-appearance: none; appearance: none; }
 .stats .s + .s { border-left: 1px solid var(--line); }
 .stats .s .k { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
 .stats .s .v { font-size: 18px; font-weight: 300; margin-top: 5px; font-variant-numeric: tabular-nums; }
+.chk { display: inline-flex; margin-left: 3px; }
+.chk svg { width: 10px; height: 10px; stroke: var(--up); stroke-width: 3; fill: none; stroke-linecap: round; stroke-linejoin: round; vertical-align: -1px; }
 
 /* Calendar */
 .calnav { display: flex; align-items: center; justify-content: space-between; margin: 6px 0 14px; }
@@ -229,7 +231,6 @@ select { -webkit-appearance: none; appearance: none; }
 .cal-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .cal-dot.pay { background: var(--up); }
 .cal-dot.due { background: var(--down); }
-.cal-dot.spent { background: var(--text); }
 .cal.mini { gap: 3px; }
 .cal.mini .cal-d { border-radius: 7px; font-size: 11px; gap: 2px; }
 .cal.mini .cal-dots { height: 5px; }
