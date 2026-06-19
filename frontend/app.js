@@ -319,31 +319,51 @@ function miniCalendar(jumpToCal) {
 // interest (APR) and savings/checking APY. Returns net-worth, liquid, and
 // per-account series of {i (day offset), v (balance)}.
 function projectSim(days) {
-  const s = snapshot(), start = midnight();
-  const bal = {}; DB.accounts.forEach(a => bal[a.id] = a.balance);
-  const occ = occurrences(start, addDays(start, days + 1)), buckets = {};
-  occ.forEach(o => { const i = daysBetween(start, o.date); (buckets[i] = buckets[i] || []).push(o); });
-  const idOf = t => { const a = DB.accounts.find(x => x.type === t); return a ? a.id : null; };
-  const chkId = idOf("checking"), rothId = idOf("roth"), k401Id = idOf("401k"), savId = idOf("savings"), cardId = idOf("credit_card");
-  const tg = {}; s.targets.forEach(t => tg[t.key] = t.funded);
-  const rothD = tg.roth || 0, k401D = tg.k401 || 0, emgD = tg.emg || 0, ccD = tg.cc || 0, spendD = s.spend_today;
-  const out = { net: [], liquid: [], acct: {} }; DB.accounts.forEach(a => out.acct[a.id] = []);
+  const start = midnight();
+  const bal = {};
+  DB.accounts.forEach(a => bal[a.id] = a.balance);
+  const occ = occurrences(start, addDays(start, days + 1));
+  const buckets = {};
+  occ.forEach(o => {
+    const i = daysBetween(start, o.date);
+    (buckets[i] = buckets[i] || []).push(o);
+  });
+  const idOf = t => {
+    const a = DB.accounts.find(x => x.type === t);
+    return a ? a.id : null;
+  };
+  const chkId = idOf("checking");
+  const out = { net: [], liquid: [], acct: {} };
+  DB.accounts.forEach(a => out.acct[a.id] = []);
   const rec = i => {
     let assets = 0, liab = 0, lq = 0;
-    DB.accounts.forEach(a => { const b = bal[a.id]; if (a.is_liability) liab += b; else assets += b; if (!a.is_liability && (a.type === "checking" || a.type === "savings")) lq += b; out.acct[a.id].push({ i, v: b }); });
-    out.net.push({ i, v: assets - liab }); out.liquid.push({ i, v: lq });
+    DB.accounts.forEach(a => {
+      const b = bal[a.id];
+      if (a.is_liability) liab += b;
+      else assets += b;
+      if (!a.is_liability && (a.type === "checking" || a.type === "savings")) {
+        lq += b;
+      }
+      out.acct[a.id].push({ i, v: b });
+    });
+    out.net.push({ i, v: assets - liab });
+    out.liquid.push({ i, v: lq });
   };
   rec(0);
   for (let i = 1; i <= days; i++) {
-    DB.accounts.forEach(a => { if (a.is_liability && a.apr) bal[a.id] *= 1 + a.apr / 100 / 365; else if (!a.is_liability && a.apy) bal[a.id] *= 1 + a.apy / 100 / 365; });
-    (buckets[i] || []).forEach(o => { if (chkId != null) bal[chkId] += o.ev.kind === "income" ? o.amount : -o.amount; });
-    if (chkId != null) {
-      if (rothId != null) { bal[chkId] -= rothD; bal[rothId] += rothD; }
-      if (k401Id != null) { bal[chkId] -= k401D; bal[k401Id] += k401D; }
-      if (savId != null) { bal[chkId] -= emgD; bal[savId] += emgD; }
-      if (cardId != null && ccD > 0) { bal[chkId] -= ccD; bal[cardId] = Math.max(0, bal[cardId] - ccD); }
-      bal[chkId] -= spendD;
-    }
+    DB.accounts.forEach(a => {
+      if (a.is_liability && a.apr) {
+        bal[a.id] *= 1 + a.apr / 100 / 365;
+      } else if (!a.is_liability && a.apy) {
+        bal[a.id] *= 1 + a.apy / 100 / 365;
+      }
+    });
+    // Only apply real scheduled income/expenses.
+    (buckets[i] || []).forEach(o => {
+      if (chkId != null) {
+        bal[chkId] += o.ev.kind === "income" ? o.amount : -o.amount;
+      }
+    });
     rec(i);
   }
   return out;
