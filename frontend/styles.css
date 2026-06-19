@@ -262,6 +262,15 @@ select { -webkit-appearance: none; appearance: none; }
 input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 3px; background: var(--line-strong); border-radius: 3px; padding: 0; margin: 10px 0; }
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: linear-gradient(180deg, #fff, #d8d8de); border: none; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.5); }
 
+/* Category wheel (Home) */
+.wheel-row { display: flex; align-items: center; gap: 20px; margin: 4px 0 18px; }
+.wheel-legend { flex: 1; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.wl-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; }
+.wl-row i { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.wl-name { flex: 1; color: var(--text); text-transform: capitalize; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wl-amt { color: var(--muted); font-variant-numeric: tabular-nums; }
+.wl-pct { color: var(--faint); width: 32px; text-align: right; font-variant-numeric: tabular-nums; }
+
 /* Category bars */
 .catrow { display: flex; align-items: center; gap: 12px; padding: 9px 0; }
 .catrow .cl { width: 92px; font-size: 13px; color: var(--text); text-transform: capitalize; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

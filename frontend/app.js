@@ -327,6 +327,15 @@ function render() { const v = $("#view"); v.innerHTML = ""; refreshNetWorth(); (
 
 // ---------- visuals ----------
 function ringChart(pct, color = "#f5f5f7", size = 76) { const r = size * 0.38, c = size / 2, sw = size * 0.1, circ = 2 * Math.PI * r, fill = Math.max(0, Math.min(1, pct)) * circ; return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="flex-shrink:0"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="rgba(245,245,247,0.09)" stroke-width="${sw}"/><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${fill.toFixed(2)} ${circ.toFixed(2)}" stroke-linecap="round" transform="rotate(-90 ${c} ${c})"/></svg>`; }
+// Minimalist multi-segment donut — one arc per category, by share of total.
+function wheelChart(amts, size = 116) {
+  const total = amts.reduce((s, x) => s + x.amt, 0);
+  const r = size * 0.4, c = size / 2, sw = size * 0.17, circ = 2 * Math.PI * r;
+  if (total <= 0) return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="flex-shrink:0"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--line)" stroke-width="${sw}"/></svg>`;
+  let off = 0;
+  const arcs = amts.map(({ amt, color }) => { const len = (amt / total) * circ, rot = -90 + (off / circ) * 360; off += len; return `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${len.toFixed(2)} ${(circ - len).toFixed(2)}" transform="rotate(${rot.toFixed(2)} ${c} ${c})"/>`; }).join("");
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="flex-shrink:0">${arcs}</svg>`;
+}
 function areaChart(values) { let vals = values.slice(); if (vals.length < 2) vals = [vals[0] || 0, vals[0] || 0]; const W = 600, H = 160, pad = 6, max = Math.max(...vals), min = Math.min(...vals, 0), range = (max - min) || 1, n = vals.length; const X = i => pad + (i / (n - 1)) * (W - 2 * pad), Y = v => H - pad - ((v - min) / range) * (H - 2 * pad); const pts = vals.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`), line = "M" + pts.join(" L"); const area = `${line} L${X(n - 1).toFixed(1)},${H - pad} L${X(0).toFixed(1)},${H - pad} Z`, id = "g" + Math.random().toString(36).slice(2, 7); return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.16"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient></defs><path d="${area}" fill="url(#${id})"/><path d="${line}" fill="none" stroke="#f5f5f7" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`; }
 
 function miniCalendar(jumpToCal) {
@@ -497,6 +506,20 @@ function renderDashboard(v) {
     $("#ls-go", sform).addEventListener("click", () => { const amt = +$("#ls-amt", sform).value || 0; if (amt > 0) logSave(amt, +$("#ls-dest", sform).value); });
   }
   v.append(el(`<div class="note">Logging a spend (Decide) or a save moves real money out of checking, so tomorrow's numbers recalibrate on their own. The app re-checks the date whenever you open it — no manual refresh.</div>`));
+
+  // By category — minimalist wheel + $ and % per category
+  const byCat = {}; DB.purchases.filter(p => p.was_made).forEach(p => byCat[p.category] = (byCat[p.category] || 0) + p.amount);
+  const catEntries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  if (catEntries.length) {
+    const totalSpent = catEntries.reduce((s, [, amt]) => s + amt, 0);
+    v.append(el(`<div class="group-label">By category</div>`));
+    const wrap = el(`<div class="wheel-row"></div>`);
+    wrap.insertAdjacentHTML("beforeend", wheelChart(catEntries.map(([cat, amt]) => ({ amt, color: catColor(cat) }))));
+    const legend = el(`<div class="wheel-legend"></div>`);
+    catEntries.forEach(([cat, amt]) => legend.append(el(`<div class="wl-row"><i style="background:${catColor(cat)}"></i><span class="wl-name">${escapeHtml(cat)}</span><span class="wl-amt">${money0(amt)}</span><span class="wl-pct">${Math.round(amt / totalSpent * 100)}%</span></div>`)));
+    wrap.append(legend);
+    v.append(wrap);
+  }
 
   // Where the money goes — forward projection from cash (calendar + balances combined)
   const agenda = projectedAgenda(45).slice(0, 7);
