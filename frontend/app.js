@@ -287,11 +287,19 @@ function projectedLiquidSeries(months) {
 function goalEta(remaining, monthly) { if (monthly <= 0 || remaining <= 0) return [null, null]; const months = Math.ceil(remaining / monthly), d = _d(); return [months, isoOf(new Date(d.getFullYear(), d.getMonth() + months, Math.min(d.getDate(), 28)))]; }
 
 function decide(amount, category = "other", isDisc = true, date = null) {
-  const snap = date ? snapshotAt(new Date(date + "T00:00:00")) : snapshot(); amount = Number(amount);
+  const refDate = date ? new Date(date + "T00:00:00") : midnight();
+  const snap = date ? snapshotAt(refDate) : snapshot(); amount = Number(amount);
   const remaining = snap.period_remaining, reasons = []; let verdict = "yes", toCredit = 0;
   const afterPay = (snap.has_income ? snap.next_pay.amount : 0);
 
-  if (amount <= remaining) { verdict = "yes"; reasons.push(`Fits — leaves ${money(Math.max(0, remaining - amount))} to spend before ${fmtDate(snap.next_payday)}.`); }
+  // real recompute of "after this purchase" — same engine, lower liquid (and any credit overflow),
+  // so the 75/25 throttle and save targets land where they'd actually land once it's logged.
+  const newLiquid = Math.max(0, snap.liquid - amount), newCc = snap.cc_balance + Math.max(0, amount - snap.liquid);
+  const after = projectFrom(refDate, newLiquid, snap.emergency_saved, newCc);
+  const target_impacts = snap.targets.map(t => { const at = after.targets.find(x => x.key === t.key); const slowed = Math.max(0, t.funded - (at ? at.funded : 0)); return { label: t.label, before: t.funded, after: at ? at.funded : 0, total_slowed: slowed * after.runway_days }; }).filter(x => x.total_slowed > 0.005);
+  const pctOfRoom = remaining > 0 ? Math.min(1, amount / remaining) : (amount > 0 ? 1 : 0);
+
+  if (amount <= remaining) { verdict = "yes"; reasons.push(`Fits — leaves ${money(after.period_remaining)} to spend before ${fmtDate(snap.next_payday)}.`); }
   else if (amount <= snap.free_over_runway) { verdict = "caution"; reasons.push(`Over your ${money(remaining)} spending room — the extra eats into what you're setting aside for goals.`); }
   else if (amount <= snap.liquid) { verdict = "caution"; reasons.push(`Uses cash you'd need for bills before ${fmtDate(snap.next_payday)}. Doable, but tight.`); }
   else { // beyond cash → credit
@@ -310,7 +318,7 @@ function decide(amount, category = "other", isDisc = true, date = null) {
   if (amount > remaining && snap.has_income) wa.push(`Wait for ${fmtDate(snap.next_payday)} — your spending room refills then.`);
   wa.push("30-day rule: list it, revisit in a month.");
   if (amount >= 100) wa.push("Used / refurbished / on sale moves it 20-40%.");
-  return { verdict, amount, reasons, goal_impacts: impacts, workarounds: wa, snap, to_credit: toCredit, is_disc: isDisc, has_budget: remaining > 0 };
+  return { verdict, amount, reasons, goal_impacts: impacts, workarounds: wa, snap, after, target_impacts, pct_of_room: pctOfRoom, to_credit: toCredit, is_disc: isDisc, has_budget: remaining > 0 };
 }
 
 function logPurchase(description, amount, category, disc, verdict, was_made, date) {
@@ -750,7 +758,14 @@ async function renderVerdict(c, amount, desc, category, disc, date) {
   c.innerHTML = "";
   const verdictEl = el(`<div class="verdict"><div class="word ${r.verdict}">${r.verdict.toUpperCase()}</div><div class="sub">${sub[r.verdict]} · ${money(amount)}${future ? " · " + fmtDate(date) : ""}</div></div>`); c.append(verdictEl);
   c.append(el(`<div class="stats"><div class="s"><div class="k">This buy</div><div class="v down">${money0(amount)}</div></div><div class="s"><div class="k">Spend room</div><div class="v">${money0(s.period_remaining)}</div></div><div class="s"><div class="k">${r.to_credit > 0 ? "On card" : (future ? "Liquid then" : "Liquid")}</div><div class="v ${r.to_credit > 0 ? "down" : ""}">${money0(r.to_credit > 0 ? r.to_credit : s.liquid)}</div></div></div>`));
+  if (s.period_remaining > 0) c.append(el(`<div class="bar${r.pct_of_room >= 0.8 ? " warn" : ""}"><i style="width:${Math.min(100, Math.round(r.pct_of_room * 100))}%"></i></div>`));
   const why = el(`<div class="section"><div class="group-label">Why</div><ul class="reasons" id="why-list"></ul></div>`); r.reasons.slice(0, 3).forEach(x => $("#why-list", why).append(el(`<li>${x}</li>`))); c.append(why);
+  if (r.after.period_remaining !== s.period_remaining || r.target_impacts.length) {
+    const ib = el(`<div class="section"><div class="group-label">If you buy this</div></div>`);
+    ib.append(el(`<div class="impact"><div class="left"><span class="name">Spend room till ${fmtDate(s.next_payday)}</span><span class="meta">${money0(s.period_remaining)} → ${money0(r.after.period_remaining)}</span></div><span class="delay ${r.after.period_remaining < s.period_remaining ? "down" : ""}">${Math.round(r.pct_of_room * 100)}% used</span></div>`));
+    r.target_impacts.forEach(t => ib.append(el(`<div class="impact"><div class="left"><span class="name">${escapeHtml(t.label)}</span><span class="meta">${money0(t.before)}/day → ${money0(t.after)}/day</span></div><span class="delay down">-${money0(t.total_slowed)}</span></div>`)));
+    c.append(ib);
+  }
   const slips = r.goal_impacts.filter(g => g.delay_days > 0);
   if (slips.length) { const gi = el(`<div class="section"><div class="group-label">Slows your goals</div></div>`); slips.forEach(g => gi.append(el(`<div class="impact"><div class="left"><span class="name">${escapeHtml(g.name)}</span></div><span class="delay down">+${g.delay_days}d → ${fmtDate(g.eta_after)}</span></div>`))); c.append(gi); }
   const actions = el(`<div class="section"><div class="group-label">Log it</div><div class="btn-row"></div></div>`);
