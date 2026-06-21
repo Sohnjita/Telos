@@ -406,9 +406,13 @@ function render() {
 // release; short of that it snaps back. Edges (no neighbor) just rubber-band.
 (() => {
   const view = $("#view"); view.style.position = "relative";
-  let sx = 0, sy = 0, tracking = false, dragging = false, dir = 0, incoming = null;
+  let sx = 0, sy = 0, tracking = false, dragging = false, dir = 0, incoming = null, outgoing = null;
   const blocked = t => t.closest && t.closest('input[type="range"], .ol-chips, .ol-plot, .cal, select, textarea');
-  const settle = () => { view.style.transition = view.style.transform = ""; if (incoming) { incoming.remove(); incoming = null; } dragging = false; dir = 0; };
+  const settle = () => {
+    if (outgoing) { while (outgoing.firstChild) view.insertBefore(outgoing.firstChild, outgoing); outgoing.remove(); outgoing = null; }
+    if (incoming) { incoming.remove(); incoming = null; }
+    dragging = false; dir = 0;
+  };
   view.addEventListener("touchstart", e => { if (blocked(e.target)) { tracking = false; return; } const t = e.touches[0]; sx = t.clientX; sy = t.clientY; tracking = true; dragging = false; }, { passive: true });
   view.addEventListener("touchmove", e => {
     if (!tracking) return;
@@ -416,16 +420,26 @@ function render() {
     if (!dragging) {
       if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.3) return;
       dragging = true; dir = dx < 0 ? 1 : -1;
+      // Outgoing content gets its own pane so it can be transformed independently of
+      // #view (and of incoming) — transforming #view itself would also shift incoming
+      // since it's a child of #view, doubling its movement and overlapping the text.
+      outgoing = el(`<div></div>`);
+      while (view.firstChild) outgoing.appendChild(view.firstChild);
+      view.append(outgoing);
       const ni = TAB_ORDER.indexOf(state.tab) + dir;
       if (ni >= 0 && ni < TAB_ORDER.length) {
-        incoming = el(`<div style="position:absolute;top:0;left:0;width:100%"></div>`);
+        // width:100% on an absolutely-positioned child resolves against #view's padding
+        // box, ignoring its padding — copy that padding so the preview content lines up
+        // with where it lands after the swipe instead of jumping in from the screen edge.
+        const pad = getComputedStyle(view);
+        incoming = el(`<div style="position:absolute;top:0;left:0;width:100%;box-sizing:border-box;padding:${pad.padding}"></div>`);
         const prevTab = state.tab; state.tab = TAB_ORDER[ni]; RENDERERS[state.tab](incoming); state.tab = prevTab;
         view.append(incoming);
       }
     }
     e.preventDefault();
     const w = view.clientWidth || window.innerWidth;
-    view.style.transform = `translateX(${incoming ? dx : dx * 0.3}px)`;
+    outgoing.style.transform = `translateX(${incoming ? dx : dx * 0.3}px)`;
     if (incoming) incoming.style.transform = `translateX(${dir > 0 ? w + dx : -w + dx}px)`;
   }, { passive: false });
   view.addEventListener("touchend", e => {
@@ -433,18 +447,19 @@ function render() {
     if (!dragging) return;
     const t = e.changedTouches[0], dx = t.clientX - sx, w = view.clientWidth || window.innerWidth;
     const commit = incoming && Math.abs(dx) > w * 0.33;
-    view.style.transition = "transform .25s cubic-bezier(.22,.61,.36,1)";
-    if (incoming) incoming.style.transition = view.style.transition;
-    if (commit) { view.style.transform = `translateX(${dir > 0 ? -w : w}px)`; incoming.style.transform = "translateX(0px)"; }
-    else { view.style.transform = "translateX(0px)"; if (incoming) incoming.style.transform = `translateX(${dir > 0 ? w : -w}px)`; }
+    const transition = "transform .25s cubic-bezier(.22,.61,.36,1)";
+    outgoing.style.transition = transition;
+    if (incoming) incoming.style.transition = transition;
+    if (commit) { outgoing.style.transform = `translateX(${dir > 0 ? -w : w}px)`; incoming.style.transform = "translateX(0px)"; }
+    else { outgoing.style.transform = "translateX(0px)"; if (incoming) incoming.style.transform = `translateX(${dir > 0 ? w : -w}px)`; }
     setTimeout(() => {
       if (!commit) { settle(); return; }
       const tab = TAB_ORDER[TAB_ORDER.indexOf(state.tab) + dir], pane = incoming;
-      captureTabState(); state.tab = tab; incoming = null; dragging = false; dir = 0;
+      captureTabState(); state.tab = tab; incoming = null; outgoing.remove(); outgoing = null; dragging = false; dir = 0;
       document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
       refreshNetWorth();
-      view.style.transition = view.style.transform = "";
-      pane.remove(); view.innerHTML = ""; while (pane.firstChild) view.appendChild(pane.firstChild);
+      pane.style.position = pane.style.top = pane.style.left = pane.style.width = pane.style.transform = pane.style.transition = "";
+      view.innerHTML = ""; while (pane.firstChild) view.appendChild(pane.firstChild);
     }, 250);
   }, { passive: true });
 })();
