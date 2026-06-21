@@ -38,7 +38,7 @@ const blank = () => ({
   seq: 1, accounts: [], events: [], goals: [], purchases: [], saves: [], conversations: [],
   savings: { roth_auto: false, roth_ytd: 0, roth_limit: 7500, roth_monthly: 0, k401_monthly: 0, emergency_monthly: 0, emergency_target: 0, emergency_date: "" },
   profile: { credit_score: 0, priorities: "", anthropic_key: "", annual_salary_pretax: 0 },
-  today_lock: { date: "", save_hit: false, save_value: 0, spend_hit: false, spend_value: 0 },
+  today_lock: { date: "", save_value: 0, spend_value: 0 },
   game: { streak: 0, longest_streak: 0, last_hit_date: "", achievements: [] },
 });
 function migrate(db) {
@@ -48,7 +48,7 @@ function migrate(db) {
     db.profile = db.profile || blank().profile;
     db.goals = (db.goals || []).map(g => ({ target_date: "", ...g }));
     if (!db.saves) db.saves = [];
-    if (!db.today_lock) db.today_lock = blank().today_lock;
+    if (!db.today_lock || "save_hit" in db.today_lock) db.today_lock = blank().today_lock;
     if (!db.game) db.game = blank().game;
     return db;
   }
@@ -200,20 +200,14 @@ function projectFrom(refDate, liquidAtRef, emergencySaved, ccBalance) {
   };
 }
 
-// Once today's logged spend/save actually reaches its target, freeze that target
-// (and flag it so the UI can show a checkmark) instead of letting it keep recomputing —
-// otherwise saving into a Roth lowers liquid, which lowers the very targets you just hit.
-// Resets automatically the moment the calendar date moves on.
-function applyTodayLock(savedToday, spentToday, proj) {
-  const t = DB.today_lock, today = isoToday(); let dirty = false;
-  if (t.date !== today) { t.date = today; t.save_hit = false; t.save_value = 0; t.spend_hit = false; t.spend_value = 0; dirty = true; }
-  if (t.save_hit && savedToday < t.save_value - 0.005) { t.save_hit = false; t.save_value = 0; dirty = true; }
-  if (t.spend_hit && spentToday < t.spend_value - 0.005) { t.spend_hit = false; t.spend_value = 0; dirty = true; }
-  if (!t.save_hit && proj.save_today > 0 && savedToday >= proj.save_today) { t.save_hit = true; t.save_value = proj.save_today; dirty = true; }
-  if (!t.spend_hit && proj.spend_today > 0 && spentToday >= proj.spend_today) { t.spend_hit = true; t.spend_value = proj.spend_today; dirty = true; }
-  if (dirty) save();
-  if (syncStreak(today, t.save_hit)) save();
-  return { save_today: t.save_hit ? t.save_value : proj.save_today, save_locked: t.save_hit, spend_today: t.spend_hit ? t.spend_value : proj.spend_today, spend_locked: t.spend_hit };
+// Today's spend/save targets are fixed once — the first time they're computed each
+// day, from that day's opening liquid — instead of shrinking every time a purchase or
+// save gets logged. Tomorrow's fresh target comes from tomorrow's opening liquid, which
+// already reflects everything logged today; that's where the recalibration happens.
+function applyTodayLock(proj) {
+  const t = DB.today_lock, today = isoToday();
+  if (t.date !== today) { t.date = today; t.save_value = proj.save_today; t.spend_value = proj.spend_today; save(); }
+  return { save_today: t.save_value, spend_today: t.spend_value };
 }
 
 // ---------- game: every dollar saved or skipped earns XP; hitting the save target keeps a streak alive ----------
@@ -253,14 +247,17 @@ function snapshot() {
   const savedToday = (DB.saves || []).filter(x => x.date === todayI).reduce((s, x) => s + x.amount, 0);
   const ccBalance = a.filter(x => x.type === "credit_card").reduce((s, x) => s + x.balance, 0);
   const proj = projectFrom(midnight(), liquid, emergencySaved, ccBalance);
-  const lock = applyTodayLock(savedToday, spentToday, proj);
+  const lock = applyTodayLock(proj);
+  const saveLocked = lock.save_today > 0 && savedToday >= lock.save_today - 0.005;
+  const spendLocked = lock.spend_today > 0 && spentToday >= lock.spend_today - 0.005;
+  if (syncStreak(todayI, saveLocked)) save();
   syncAchievements();
   const lvl = levelInfo(Math.round(lifetimeSaved()));
 
   return {
     accounts: a, assets, liabilities, net_worth: assets - liabilities, total_liquid: totalLiquid,
     spent_today: spentToday, saved_today: savedToday,
-    ...proj, save_today: lock.save_today, save_locked: lock.save_locked, spend_today: lock.spend_today, spend_locked: lock.spend_locked,
+    ...proj, save_today: lock.save_today, save_locked: saveLocked, spend_today: lock.spend_today, spend_locked: spendLocked,
     emergency_target: DB.savings.emergency_target || 0, emergency_pct: (DB.savings.emergency_target > 0) ? Math.min(1, emergencySaved / DB.savings.emergency_target) : (emergencySaved > 0 ? 1 : 0),
     has_setup: DB.events.some(e => e.kind === "income") || a.length > 0,
     level: lvl.level, xp_in_level: lvl.xp_in_level, xp_for_next: lvl.xp_for_next, level_pct: lvl.pct,
