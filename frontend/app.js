@@ -385,32 +385,67 @@ function transferFunds(fromId, toId, amount) {
 const state = {
   tab: "dashboard", convId: null, editAccount: null, editGoal: null,
   decideView: "check", calYear: null, calMonth: null, schedSel: null, editEvent: null, whatIfMonthly: 200,
-  outlookMetric: "net", outlookDays: 30,
+  outlookMetric: "net", outlookDays: 30, collapse: {},
   decide: { desc: "", amount: "", category: "shopping", disc: 1, date: "" },
 };
 function captureTabState() { if (state.tab === "decide" && state.decideView === "check" && $("#d-amt")) state.decide = { desc: $("#d-desc").value, amount: $("#d-amt").value, category: $("#d-cat").value, date: $("#d-date").value, disc: state.decideDisc ?? state.decide.disc }; }
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.tab)));
 const TAB_ORDER = ["dashboard", "schedule", "decide", "history", "manage"];
+const RENDERERS = { dashboard: renderDashboard, schedule: renderCalendar, decide: renderDecide, history: renderHistory, manage: renderManage };
 let _navDir = 0;
 function switchTab(tab) { captureTabState(); _navDir = TAB_ORDER.indexOf(tab) - TAB_ORDER.indexOf(state.tab); state.tab = tab; document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab)); render(); }
 function refreshNetWorth() { $("#networth-pill").textContent = money0(snapshot().net_worth); }
 function render() {
   const v = $("#view"); v.innerHTML = ""; refreshNetWorth();
-  ({ dashboard: renderDashboard, schedule: renderCalendar, decide: renderDecide, history: renderHistory, manage: renderManage }[state.tab])(v);
+  RENDERERS[state.tab](v);
   v.classList.remove("slide-l", "slide-r", "fade-up"); void v.offsetWidth;
   v.classList.add(_navDir > 0 ? "slide-l" : _navDir < 0 ? "slide-r" : "fade-up"); _navDir = 0;
 }
-// Swipe between tabs — ignored when the gesture starts on a horizontally-draggable control
+// Swipe between tabs, iOS-style: content tracks the finger 1:1 and previews the
+// neighboring tab as it's dragged in. Past ~1/3 of the screen width it commits on
+// release; short of that it snaps back. Edges (no neighbor) just rubber-band.
 (() => {
-  const view = $("#view"); let sx = 0, sy = 0, tracking = false;
+  const view = $("#view"); view.style.position = "relative";
+  let sx = 0, sy = 0, tracking = false, dragging = false, dir = 0, incoming = null;
   const blocked = t => t.closest && t.closest('input[type="range"], .ol-chips, .ol-plot, .cal, select, textarea');
-  view.addEventListener("touchstart", e => { if (blocked(e.target)) { tracking = false; return; } const t = e.touches[0]; sx = t.clientX; sy = t.clientY; tracking = true; }, { passive: true });
+  const settle = () => { view.style.transition = view.style.transform = ""; if (incoming) { incoming.remove(); incoming = null; } dragging = false; dir = 0; };
+  view.addEventListener("touchstart", e => { if (blocked(e.target)) { tracking = false; return; } const t = e.touches[0]; sx = t.clientX; sy = t.clientY; tracking = true; dragging = false; }, { passive: true });
+  view.addEventListener("touchmove", e => {
+    if (!tracking) return;
+    const t = e.touches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+    if (!dragging) {
+      if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.3) return;
+      dragging = true; dir = dx < 0 ? 1 : -1;
+      const ni = TAB_ORDER.indexOf(state.tab) + dir;
+      if (ni >= 0 && ni < TAB_ORDER.length) {
+        incoming = el(`<div style="position:absolute;top:0;left:0;width:100%"></div>`);
+        const prevTab = state.tab; state.tab = TAB_ORDER[ni]; RENDERERS[state.tab](incoming); state.tab = prevTab;
+        view.append(incoming);
+      }
+    }
+    e.preventDefault();
+    const w = view.clientWidth || window.innerWidth;
+    view.style.transform = `translateX(${incoming ? dx : dx * 0.3}px)`;
+    if (incoming) incoming.style.transform = `translateX(${dir > 0 ? w + dx : -w + dx}px)`;
+  }, { passive: false });
   view.addEventListener("touchend", e => {
     if (!tracking) return; tracking = false;
-    const t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy;
-    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    const i = TAB_ORDER.indexOf(state.tab), ni = dx < 0 ? i + 1 : i - 1;
-    if (ni >= 0 && ni < TAB_ORDER.length) switchTab(TAB_ORDER[ni]);
+    if (!dragging) return;
+    const t = e.changedTouches[0], dx = t.clientX - sx, w = view.clientWidth || window.innerWidth;
+    const commit = incoming && Math.abs(dx) > w * 0.33;
+    view.style.transition = "transform .25s cubic-bezier(.22,.61,.36,1)";
+    if (incoming) incoming.style.transition = view.style.transition;
+    if (commit) { view.style.transform = `translateX(${dir > 0 ? -w : w}px)`; incoming.style.transform = "translateX(0px)"; }
+    else { view.style.transform = "translateX(0px)"; if (incoming) incoming.style.transform = `translateX(${dir > 0 ? w : -w}px)`; }
+    setTimeout(() => {
+      if (!commit) { settle(); return; }
+      const tab = TAB_ORDER[TAB_ORDER.indexOf(state.tab) + dir], pane = incoming;
+      captureTabState(); state.tab = tab; incoming = null; dragging = false; dir = 0;
+      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+      refreshNetWorth();
+      view.style.transition = view.style.transform = "";
+      pane.remove(); view.innerHTML = ""; while (pane.firstChild) view.appendChild(pane.firstChild);
+    }, 250);
   }, { passive: true });
 })();
 
@@ -636,7 +671,7 @@ function renderDashboard(v) {
   const unlocked = d.achievements.filter(a => a.unlocked).length;
   const achList = el(`<div class="section"></div>`);
   d.achievements.forEach(a => achList.append(el(`<div class="row ach${a.unlocked ? "" : " locked"}"><div class="left"><span class="name">${escapeHtml(a.name)}</span><span class="meta">${escapeHtml(a.desc)}</span></div>${a.unlocked ? `<span class="chk">${ICONS.check}</span>` : ""}</div>`)));
-  v.append(collapsible(`Achievements (${unlocked}/${d.achievements.length})`, achList, false));
+  v.append(collapsible(`Achievements (${unlocked}/${d.achievements.length})`, achList, false, "achievements"));
 }
 
 const ACCOUNT_TYPES = [["checking", "Checking"], ["savings", "Savings"], ["401k", "401(k)"], ["roth", "Roth IRA"], ["brokerage", "Brokerage"], ["other", "Other asset"], ["credit_card", "Credit card"], ["student_loan", "Student loan"], ["loan", "Other loan"]];
@@ -650,9 +685,14 @@ const CAT_COLOR = { shopping: "#e6e6e6", dining: "#bdbdbd", entertainment: "#949
 const catColor = c => CAT_COLOR[c] || CAT_COLOR.other;
 
 // ---------- collapsible sections + sortable lists (shared across tabs) ----------
-function collapsible(label, contentEl, defaultOpen = true) {
-  const det = el(`<details class="coll" ${defaultOpen ? "open" : ""}><summary class="group-label">${label}</summary></details>`);
+// Open/closed state persists per tab (keyed separately from the label, since some labels
+// like the achievements count change at render time) so it survives a tab swipe and back.
+function collapsible(label, contentEl, defaultOpen = true, key = label) {
+  const k = `${state.tab}:${key}`;
+  const open = k in state.collapse ? state.collapse[k] : defaultOpen;
+  const det = el(`<details class="coll" ${open ? "open" : ""}><summary class="group-label">${label}</summary></details>`);
   det.append(contentEl);
+  det.addEventListener("toggle", () => { state.collapse[k] = det.open; });
   return det;
 }
 function sortControl(current, options, onChange) {
