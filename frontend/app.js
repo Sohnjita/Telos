@@ -17,8 +17,9 @@ const ICONS = {
   history: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.3 2"/></svg>`,
   manage:  `<svg viewBox="0 0 24 24"><path d="M4 7.5h9"/><path d="M17 7.5h3"/><circle cx="15" cy="7.5" r="2"/><path d="M4 16.5h3"/><path d="M11 16.5h9"/><circle cx="9" cy="16.5" r="2"/></svg>`,
   check:   `<svg viewBox="0 0 24 24"><path d="M4.5 12.5 9.5 17.5 19.5 6.5"/></svg>`,
+  coach:   `<svg viewBox="0 0 24 24"><path d="M4 5.5h16v10H9.5L5 19.5V15.5H4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>`,
 };
-const TAB_ICON = { dashboard: "home", schedule: "calendar", decide: "decide", history: "history", manage: "manage" };
+const TAB_ICON = { dashboard: "home", schedule: "calendar", decide: "decide", coach: "coach", history: "history", manage: "manage" };
 // account-type glyphs (minimalist, stroke)
 const GLYPH = {
   cash:   `<svg viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="11" rx="2"/><circle cx="12" cy="12" r="2.2"/></svg>`,
@@ -383,14 +384,14 @@ function transferFunds(fromId, toId, amount) {
 // ============================================================================
 const state = {
   tab: "dashboard", convId: null, editAccount: null, editGoal: null,
-  decideView: "check", calYear: null, calMonth: null, schedSel: null, editEvent: null, whatIfMonthly: 200,
+  calYear: null, calMonth: null, schedSel: null, editEvent: null, whatIfMonthly: 200,
   outlookMetric: "net", outlookDays: 30, collapse: {},
   decide: { desc: "", amount: "", category: "shopping", disc: 1, date: "" },
 };
-function captureTabState() { if (state.tab === "decide" && state.decideView === "check" && $("#d-amt")) state.decide = { desc: $("#d-desc").value, amount: $("#d-amt").value, category: $("#d-cat").value, date: $("#d-date").value, disc: state.decideDisc ?? state.decide.disc }; }
+function captureTabState() { if (state.tab === "decide" && $("#d-amt")) state.decide = { desc: $("#d-desc").value, amount: $("#d-amt").value, category: $("#d-cat").value, date: $("#d-date").value, disc: state.decideDisc ?? state.decide.disc }; }
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.tab)));
-const TAB_ORDER = ["dashboard", "schedule", "decide", "history", "manage"];
-const RENDERERS = { dashboard: renderDashboard, schedule: renderCalendar, decide: renderDecide, history: renderHistory, manage: renderManage };
+const TAB_ORDER = ["dashboard", "schedule", "decide", "coach", "history", "manage"];
+const RENDERERS = { dashboard: renderDashboard, schedule: renderCalendar, decide: renderDecide, coach: renderCoach, history: renderHistory, manage: renderManage };
 let _navDir = 0;
 function switchTab(tab) { captureTabState(); _navDir = TAB_ORDER.indexOf(tab) - TAB_ORDER.indexOf(state.tab); state.tab = tab; document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab)); render(); }
 function refreshNetWorth() { $("#networth-pill").textContent = money0(snapshot().net_worth); }
@@ -502,6 +503,8 @@ function miniCalendar(jumpToCal) {
 // income/expenses, your current daily save plan, discretionary spend, debt
 // interest (APR) and savings/checking APY. Returns net-worth, liquid, and
 // per-account series of {i (day offset), v (balance)}.
+// No live price-target feed (would need a paid tier) — assume the same 7%/yr the "Grow it" slider uses elsewhere.
+const INVEST_DEFAULT_PCT = 7, INVEST_DEFAULT_TYPES = ["roth", "401k", "brokerage"];
 function projectSim(days) {
   const start = midnight();
   const bal = {};
@@ -538,8 +541,9 @@ function projectSim(days) {
     DB.accounts.forEach(a => {
       if (a.is_liability && a.apr) {
         bal[a.id] *= 1 + a.apr / 100 / 365;
-      } else if (!a.is_liability && a.apy) {
-        bal[a.id] *= 1 + a.apy / 100 / 365;
+      } else if (!a.is_liability) {
+        const rate = a.apy || (INVEST_DEFAULT_TYPES.includes(a.type) ? INVEST_DEFAULT_PCT : 0);
+        if (rate) bal[a.id] *= 1 + rate / 100 / 365;
       }
     });
     // Only apply real scheduled income/expenses.
@@ -826,11 +830,7 @@ function eventForm(prefillDate, editId) {
 // ============================================================================
 function renderDecide(v) {
   v.append(el(`<div class="view-title">Decide</div>`));
-  const seg = el(`<div class="seg"><button data-v="check">Check a buy</button><button data-v="coach">Coach</button></div>`); v.append(seg);
-  const body = el(`<div id="decide-body"></div>`); v.append(body);
-  const setView = view => { captureTabState(); state.decideView = view; seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === view)); body.innerHTML = ""; (view === "coach" ? renderCoachInto : renderCheckInto)(body); };
-  seg.querySelectorAll("button").forEach(b => b.addEventListener("click", () => setView(b.dataset.v)));
-  setView(state.decideView || "check");
+  renderCheckInto(v);
 }
 function renderCheckInto(v) {
   const c = state.decide;
@@ -876,17 +876,22 @@ async function renderVerdict(c, amount, desc, category, disc, date) {
 // ---------- coach ----------
 function coachReplyRules(text) { const snap = snapshot(), m = text.match(/\$?\s*([\d][\d,]*(?:\.\d+)?)/); if (m) { const amt = parseFloat(m[1].replace(/,/g, "")); if (amt > 0) { const r = decide(amt, "other", true); return `${r.verdict.toUpperCase()} on ${money(amt)}.\n${r.reasons[0]}`; } } return `Liquid ${money0(snap.liquid)} · spend ${money0(snap.spend_today)}/day, save ${money0(snap.save_today)}/day until ${fmtDate(snap.next_payday)}.\n\nGive me a price and I'll weigh it.`; }
 function buildSystemPrompt() {
-  const s = snapshot(), p = DB.profile;
+  const s = snapshot(), p = DB.profile, sv = DB.savings;
   const inc = DB.events.filter(e => e.kind === "income").map(e => `${e.name} ${money(e.amount)} ${recurLabel(e.recur)}`).join("; ") || "none";
   const exp = DB.events.filter(e => e.kind === "expense").map(e => `${e.name} ${money(e.amount)} ${recurLabel(e.recur)}${e.flex ? "(flex)" : ""}`).join("; ") || "none";
   const tg = s.targets.map(t => `${t.label} ${money(t.funded)}/${money(t.daily)}`).join("; ") || "none";
-  return `Direct, numbers-first finance coach. Concise.
+  const accts = DB.accounts.map(a => { let d = `${a.name} (${typeLabel(a.type)}) ${a.is_liability ? "-" : ""}${money(a.balance)}`; if (a.is_liability && a.apr) d += ` @ ${a.apr}% APR`; if (a.holdings?.length) d += ` [${a.holdings.map(h => `${h.shares} ${h.symbol}`).join(", ")}]`; return d; }).join("; ") || "none";
+  const goals = (DB.goals || []).map(g => `${g.name} ${money(g.current_amount)}/${money(g.target_amount)} by ${g.target_date} (+${money(g.monthly_contribution)}/mo)`).join("; ") || "none";
+  return `Direct, numbers-first finance coach who can answer ANY question about this person's finances — not just judge one purchase. Concise.
 
-NOW: net ${money(s.net_worth)} | liquid ${money(s.liquid)} | card ${money(s.cc_balance)} | spend/day ${money(s.spend_today)} | save/day ${money(s.save_today)} | payday ${s.next_payday} (${s.runway_days}d)${s.short_before_pay > 0 ? ` | SHORT ${money(s.short_before_pay)} (credit)` : ""}
+ACCOUNTS: ${accts}
+NOW: net ${money(s.net_worth)} | liquid ${money(s.liquid)} | total liquid (checking+savings) ${money(s.total_liquid)} | card ${money(s.cc_balance)} | spend/day ${money(s.spend_today)} | save/day ${money(s.save_today)} | payday ${s.next_payday} (${s.runway_days}d)${s.short_before_pay > 0 ? ` | SHORT ${money(s.short_before_pay)} (credit)` : ""}
 SAVE TARGETS (funded/needed): ${tg}
+GOALS: ${goals}
+RETIREMENT/EMERGENCY: Roth YTD ${money(sv.roth_ytd)}/${money(sv.roth_limit)} (auto ${sv.roth_auto ? money(sv.roth_monthly) + "/mo" : "off"}) | 401k ${money(sv.k401_monthly)}/mo | Emergency target ${money(sv.emergency_target)} by ${sv.emergency_date || "no date"} (${money(sv.emergency_monthly)}/mo)
 INCOME: ${inc}
 EXPENSES: ${exp}
-PRIORITIES: ${p.priorities || "none"}
+PRIORITIES: ${p.priorities || "none"}${p.annual_salary_pretax ? ` | Salary (pretax) ${money(p.annual_salary_pretax)}` : ""}${p.credit_score ? ` | Credit score ${p.credit_score}` : ""}
 
 Flex expenses trim first; fixed are committed. Spend never forced to $0 — savings throttle instead.`;
 }
@@ -904,6 +909,10 @@ function renderCoachInto(v) {
   $("#chat-send", input).addEventListener("click", send); $("#chat-text", input).addEventListener("keydown", e => { if (e.key === "Enter") send(); });
   if (DB.conversations.length) { v.append(el(`<div class="group-label">Saved</div>`)); [...DB.conversations].reverse().forEach(c => { const row = el(`<div class="row"><div class="left"><span class="name">${escapeHtml(c.title || "Conversation")}</span><span class="meta">${fmtDate(c.created_at)}</span></div><button class="del">×</button></div>`); $(".left", row).addEventListener("click", () => loadConv(c.id)); $(".del", row).addEventListener("click", () => { if (confirm("Delete?")) { DB.conversations = DB.conversations.filter(x => x.id !== c.id); save(); render(); } }); v.append(row); }); }
   loadConv(state.convId);
+}
+function renderCoach(v) {
+  v.append(el(`<div class="view-title">Coach</div>`));
+  renderCoachInto(v);
 }
 
 // ============================================================================

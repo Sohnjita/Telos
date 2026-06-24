@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <title>Telos</title>
-  <link rel="stylesheet" href="styles.css?v=31" />
+  <link rel="stylesheet" href="styles.css?v=32" />
 </head>
 <body>
   <div id="app">
@@ -25,11 +25,12 @@
       <button class="tab active" data-tab="dashboard"><span class="lbl">Home</span></button>
       <button class="tab" data-tab="schedule"><span class="lbl">Calendar</span></button>
       <button class="tab" data-tab="decide"><span class="lbl">Decide</span></button>
+      <button class="tab" data-tab="coach"><span class="lbl">Coach</span></button>
       <button class="tab" data-tab="history"><span class="lbl">History</span></button>
       <button class="tab" data-tab="manage"><span class="lbl">Manage</span></button>
     </nav>
   </div>
-  <script src="app.js?v=31"></script>
+  <script src="app.js?v=32"></script>
   <script>
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
