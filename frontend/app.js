@@ -90,12 +90,12 @@ function midnight() { const d = _d(); d.setHours(0, 0, 0, 0); return d; }
 const daysBetween = (a, b) => Math.round((b - a) / 86400000);
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 function clampedDate(y, m0, day) { const ref = new Date(y, m0, 1); return new Date(ref.getFullYear(), ref.getMonth(), Math.min(day, daysInMonth(ref.getFullYear(), ref.getMonth() + 1))); }
-function daysUntil(iso) { return daysBetween(midnight(), new Date(iso + "T00:00:00")); }
+function daysUntil(iso, refDate) { return daysBetween(refDate || midnight(), new Date(iso + "T00:00:00")); }
 function isoMonthsFromNow(n) { const d = _d(); return isoOf(new Date(d.getFullYear(), d.getMonth() + Math.round(n), d.getDate())); }
 function monthsUntil(iso) { return Math.max(0, Math.round(daysUntil(iso) / 30.44)); }
 function monthsLeftInYear() { const d = _d(), m = d.getMonth(), dim = daysInMonth(d.getFullYear(), m + 1); return (11 - m) + (dim - d.getDate() + 1) / dim; }
 const DPM = 30.4375;
-function daysToTaxDay() { const now = _d(); return Math.max(3, daysBetween(midnight(), new Date(now.getFullYear() + 1, 3, 15))); }
+function daysToTaxDay(refDate) { const d = refDate || midnight(); return Math.max(3, daysBetween(d, new Date(d.getFullYear() + 1, 3, 15))); }
 function daysToMonthEnd(refDate) { return Math.max(1, daysBetween(refDate, new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0))); }
 
 // ============================================================================
@@ -136,12 +136,12 @@ function dailyTargets(refDate, emergencySaved, ccBalance) {
   const t = [], sv = DB.savings;
   if (ccBalance > 0) t.push({ key: "cc", label: "Pay off card", glyph: "debt", daily: ccBalance / daysToMonthEnd(refDate) });
   const eRem = Math.max(0, (sv.emergency_target || 0) - emergencySaved);
-  if (eRem > 0) { const days = (sv.emergency_date && daysUntil(sv.emergency_date) > 0) ? daysUntil(sv.emergency_date) : 365; t.push({ key: "emg", label: "Emergency fund", glyph: "save", daily: eRem / days }); }
+  if (eRem > 0) { const days = (sv.emergency_date && daysUntil(sv.emergency_date, refDate) > 0) ? daysUntil(sv.emergency_date, refDate) : 365; t.push({ key: "emg", label: "Emergency fund", glyph: "save", daily: eRem / days }); }
   else if (sv.emergency_monthly > 0 && !(sv.emergency_target > 0)) t.push({ key: "emg", label: "Emergency fund", glyph: "save", daily: sv.emergency_monthly / DPM });
-  if (sv.roth_auto) { const rem = Math.max(0, (sv.roth_limit || 7500) - (sv.roth_ytd || 0)); if (rem > 0) t.push({ key: "roth", label: "Roth IRA", glyph: "invest", daily: rem / daysToTaxDay() }); }
+  if (sv.roth_auto) { const rem = Math.max(0, (sv.roth_limit || 7500) - (sv.roth_ytd || 0)); if (rem > 0) t.push({ key: "roth", label: "Roth IRA", glyph: "invest", daily: rem / daysToTaxDay(refDate) }); }
   else if (sv.roth_monthly > 0) t.push({ key: "roth", label: "Roth IRA", glyph: "invest", daily: sv.roth_monthly / DPM });
   if (sv.k401_monthly > 0) t.push({ key: "k401", label: "401(k)", glyph: "invest", daily: sv.k401_monthly / DPM });
-  DB.goals.forEach(g => { const rem = Math.max(0, g.target_amount - g.current_amount); if (rem <= 0) return; let daily = 0; if (g.target_date && daysUntil(g.target_date) > 0) daily = rem / daysUntil(g.target_date); else if (g.monthly_contribution > 0) daily = g.monthly_contribution / DPM; if (daily > 0) t.push({ key: "goal" + g.id, label: g.name, glyph: "save", daily }); });
+  DB.goals.forEach(g => { const rem = Math.max(0, g.target_amount - g.current_amount); if (rem <= 0) return; let daily = 0; if (g.target_date && daysUntil(g.target_date, refDate) > 0) daily = rem / daysUntil(g.target_date, refDate); else if (g.monthly_contribution > 0) daily = g.monthly_contribution / DPM; if (daily > 0) t.push({ key: "goal" + g.id, label: g.name, glyph: "save", daily }); });
   return t;
 }
 
@@ -519,9 +519,11 @@ function projectSim(days) {
     const a = DB.accounts.find(x => x.type === t);
     return a ? a.id : null;
   };
-  const chkId = idOf("checking");
-  const out = { net: [], liquid: [], acct: {} };
+  const chkId = idOf("checking"), savId = idOf("savings"), rothId = idOf("roth"), k401Id = idOf("401k"), ccId = idOf("credit_card");
+  const out = { net: [], liquid: [], acct: {}, goal: {} };
   DB.accounts.forEach(a => out.acct[a.id] = []);
+  const goalProg = {};
+  DB.goals.forEach(g => { out.goal[g.id] = []; goalProg[g.id] = g.current_amount; });
   const rec = i => {
     let assets = 0, liab = 0, lq = 0;
     DB.accounts.forEach(a => {
@@ -535,6 +537,7 @@ function projectSim(days) {
     });
     out.net.push({ i, v: assets - liab });
     out.liquid.push({ i, v: lq });
+    DB.goals.forEach(g => out.goal[g.id].push({ i, v: goalProg[g.id] }));
   };
   rec(0);
   for (let i = 1; i <= days; i++) {
@@ -552,6 +555,31 @@ function projectSim(days) {
         bal[chkId] += o.ev.kind === "income" ? o.amount : -o.amount;
       }
     });
+    // Sweep that day's prescribed save plan into the matching account, same priority
+    // order (card→emergency→Roth→401k→goals) as the live "Save today" targets — this is
+    // what makes the outlook reflect your safe elections instead of just sitting in checking.
+    // Goals aren't backed by a real account (current_amount is a manual figure), so their
+    // funded amount accumulates into a synthetic progress series instead of a balance.
+    if (chkId != null) {
+      const simDate = addDays(start, i);
+      const liquidNow = DB.accounts.filter(a => a.type === "checking" && !a.is_liability).reduce((s, a) => s + bal[a.id], 0);
+      const emgNow = DB.accounts.filter(a => a.type === "savings" && !a.is_liability).reduce((s, a) => s + bal[a.id], 0);
+      const ccNow = DB.accounts.filter(a => a.type === "credit_card").reduce((s, a) => s + bal[a.id], 0);
+      projectFrom(simDate, liquidNow, emgNow, ccNow).targets.forEach(t => {
+        if (t.funded <= 0) return;
+        if (t.key === "cc") { if (ccId == null) return; bal[chkId] -= t.funded; bal[ccId] -= t.funded; }
+        else if (t.key === "emg") { if (savId == null) return; bal[chkId] -= t.funded; bal[savId] += t.funded; }
+        else if (t.key === "roth") { if (rothId == null) return; bal[chkId] -= t.funded; bal[rothId] += t.funded; }
+        else if (t.key === "k401") { if (k401Id == null) return; bal[chkId] -= t.funded; bal[k401Id] += t.funded; }
+        else if (t.key.startsWith("goal")) {
+          const gid = +t.key.slice(4);
+          if (goalProg[gid] == null) return;
+          const g = DB.goals.find(x => x.id === gid);
+          bal[chkId] -= t.funded;
+          goalProg[gid] = Math.min(g ? g.target_amount : Infinity, goalProg[gid] + t.funded);
+        }
+      });
+    }
     rec(i);
   }
   return out;
@@ -590,12 +618,15 @@ function renderOutlook(v) {
   if (!DB.accounts.length) return;
   const days = state.outlookDays || 30, metric = state.outlookMetric || "net";
   const sim = projectSim(365);
-  const full = metric === "net" ? sim.net : metric === "liquid" ? sim.liquid : (sim.acct[+metric] || sim.net);
+  const full = metric === "net" ? sim.net : metric === "liquid" ? sim.liquid
+    : (typeof metric === "string" && metric.startsWith("goal") && sim.goal[+metric.slice(4)]) ? sim.goal[+metric.slice(4)]
+    : (sim.acct[+metric] || sim.net);
   const series = full.slice(0, days + 1);
   const chips = el(`<div class="ol-chips"></div>`);
   const addChip = (key, label) => { const c = el(`<button class="ol-chip ${String(metric) === String(key) ? "on" : ""}">${escapeHtml(label)}</button>`); c.addEventListener("click", () => { state.outlookMetric = key; render(); }); chips.append(c); };
   addChip("net", "Net worth"); addChip("liquid", "Liquid");
   DB.accounts.forEach(a => addChip(String(a.id), a.name));
+  DB.goals.forEach(g => addChip("goal" + g.id, g.name));
   v.append(chips);
   const chg = series[series.length - 1].v - series[0].v;
   v.append(scrubChart(series, chg >= 0 ? "#2ecc71" : "#ff4d4d"));
