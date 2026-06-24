@@ -963,13 +963,19 @@ function renderManage(v) {
   else if (state.acctSort === "amount") accts.sort((a, b) => signedBal(b) - signedBal(a));
   else if (state.acctSort === "type") accts.sort((a, b) => typeLabel(a.type).localeCompare(typeLabel(b.type)));
   accts.forEach(a => {
+    const open = state.editAccount === a.id;
     let meta = typeLabel(a.type); if (a.is_liability && a.apr) meta += ` · ${a.apr}%`; if (a.holdings?.length) meta += ` · ${a.holdings.length} holding${a.holdings.length > 1 ? "s" : ""}`;
     const row = el(`<div class="row"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph">${acctGlyph(a.type)}</span><span style="display:flex;flex-direction:column"><span class="name">${escapeHtml(a.name)}</span><span class="meta">${meta}</span></span></div><div style="display:flex;align-items:center;gap:14px"><span class="v ${a.is_liability ? "down" : ""}">${a.is_liability ? "-" : ""}${money0(a.balance)}</span><button class="del">×</button></div></div>`);
-    $(".edit", row).addEventListener("click", () => { state.editAccount = a.id; render(); });
+    $(".edit", row).addEventListener("click", () => { state.editAccount = open ? null : a.id; render(); });
     $(".del", row).addEventListener("click", () => { DB.accounts = DB.accounts.filter(x => x.id !== a.id); if (state.editAccount === a.id) state.editAccount = null; save(); render(); });
     acctWrap.append(row);
+    if (open) acctWrap.append(accountForm());
   });
-  acctWrap.append(accountForm());
+  const addOpen = state.editAccount === "new";
+  const addRow = el(`<div class="row"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph" style="font-size:18px">+</span><span class="name">Add account</span></div></div>`);
+  $(".edit", addRow).addEventListener("click", () => { state.editAccount = addOpen ? null : "new"; render(); });
+  acctWrap.append(addRow);
+  if (addOpen) acctWrap.append(accountForm());
   v.append(collapsible("Accounts", acctWrap));
 
   // Transfer — move cash between accounts (e.g. pay a credit card down from checking)
@@ -1092,7 +1098,7 @@ async function refreshHoldingPrices(account) {
 }
 
 function accountForm() {
-  const editing = state.editAccount ? DB.accounts.find(a => a.id === state.editAccount) : null;
+  const editing = (state.editAccount && state.editAccount !== "new") ? DB.accounts.find(a => a.id === state.editAccount) : null;
   const e = editing || { name: "", type: "checking", balance: 0, apr: 0, principal: 0, interest_balance: 0 };
   const form = el(`<div class="section" style="margin-top:14px">
     <div class="group-label" style="margin-top:0">${editing ? "Edit account" : "Add account"}</div>
