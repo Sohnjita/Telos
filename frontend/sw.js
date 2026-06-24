@@ -1,6 +1,6 @@
 // Service worker: caches the app shell so Money runs offline, on 5G, anywhere.
 // Data is NOT here — it lives in the device's localStorage, separate from this cache.
-const CACHE = "telos-v29";
+const CACHE = "telos-v30";
 const ASSETS = [
   "./",
   "./index.html",
@@ -25,6 +25,7 @@ self.addEventListener("activate", (e) => {
 // Stale-while-revalidate: instant + offline, but updates quietly when online.
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
+  if (new URL(e.request.url).origin !== location.origin) return; // never cache third-party APIs (Finnhub, Anthropic)
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(e.request);

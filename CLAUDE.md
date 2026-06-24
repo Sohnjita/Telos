@@ -25,19 +25,19 @@ Edit only what a task needs; this map exists so you don't re-read all of `fronte
 
 ## DB schema
 `{ seq, accounts[], events[], goals[], purchases[], saves[], conversations[], savings{}, profile{} }`
-- account: `{id,name,type,balance,is_liability,apr,principal,interest_balance}`. types: checking savings 401k roth brokerage other credit_card student_loan loan.
+- account: `{id,name,type,balance,is_liability,apr,principal,interest_balance,holdings[]}`. types: checking savings 401k roth brokerage other credit_card student_loan loan. `holdings` (roth/brokerage only, optional): `{symbol,shares,price,price_at}` — when present, `balance` is derived (`holdingsValue()`) from shares × last-fetched price instead of entered manually; refreshed on demand via Finnhub (`refreshHoldingPrices`, needs `profile.finnhub_key`).
 - event: `{id,name,amount,kind:income|expense,flex,recur,date,day,day2,skip[],category}`.
 - goal: `{id,name,target_amount,current_amount,monthly_contribution,target_date,priority}`.
 - purchase: `{id,description,amount,category,is_discretionary,verdict,was_made,account_id,to_credit,occurred_at}`.
 - save: `{id,amount,account_id,dest,date}`.
 - savings: `{roth_auto,roth_ytd,roth_limit,roth_monthly,k401_monthly,emergency_monthly,emergency_target,emergency_date}`.
-- profile: `{credit_score,priorities,anthropic_key,annual_salary_pretax}`.
+- profile: `{credit_score,priorities,anthropic_key,finnhub_key,annual_salary_pretax}`.
 
 ## Engine model (snapshot) — liquid-anchored, daily, NO calendar-month logic
 - `liquid` = checking only (spendable now). `total_liquid` = checking+savings (display). savings = earmarked but accessible.
 - runway = today → next income event. `freeOverRunway = liquid + winIncome − winExpenses − reserveForNext`; `freeDaily = /runwayDays`.
 - `reserveForNext` = shortfall of the paycheck-after vs its own bills (handles rent-on-payday).
-- daily save targets (priority: card→Roth→401k→goals→emergency), each `remaining/daysToDeadline`.
+- daily save targets (priority: card→emergency→Roth→401k→goals), each `remaining/daysToDeadline`.
 - fund fully if `ideal_daily ≤ freeDaily`; else keep ~25% of free cash for spending (never $0) and fund rest in priority; `over_allocated` + `underfunded[]` name shortfalls.
 - `spend_today = freeDaily − save_today`. `spent_today/saved_today` from today's purchases/saves.
 - everything recomputes from current balances each render → rollover is automatic.

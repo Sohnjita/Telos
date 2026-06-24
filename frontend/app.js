@@ -37,7 +37,7 @@ const DB_KEY = "money.db.v1";
 const blank = () => ({
   seq: 1, accounts: [], events: [], goals: [], purchases: [], saves: [], conversations: [],
   savings: { roth_auto: false, roth_ytd: 0, roth_limit: 7500, roth_monthly: 0, k401_monthly: 0, emergency_monthly: 0, emergency_target: 0, emergency_date: "" },
-  profile: { credit_score: 0, priorities: "", anthropic_key: "", annual_salary_pretax: 0 },
+  profile: { credit_score: 0, priorities: "", anthropic_key: "", finnhub_key: "", annual_salary_pretax: 0 },
   today_lock: { date: "", save_value: 0, spend_value: 0 },
   game: { streak: 0, longest_streak: 0, last_hit_date: "", achievements: [] },
 });
@@ -128,17 +128,19 @@ function nextIncomeAfter(date) { const occ = occurrences(date, addDays(date, 200
 // ============================================================================
 const LIQUID_TYPES = ["checking", "savings"];
 
-// Daily save targets, in funding-priority order: card → Roth → 401k → goals → emergency.
+// Daily save targets, in funding-priority order: card → emergency → Roth → 401k → goals.
+// Emergency comes before Roth so a thin cash cushion gets rebuilt before retirement
+// contributions resume — it's the fund you'd actually dip into first if cash got tight.
 function dailyTargets(refDate, emergencySaved, ccBalance) {
   const t = [], sv = DB.savings;
   if (ccBalance > 0) t.push({ key: "cc", label: "Pay off card", glyph: "debt", daily: ccBalance / daysToMonthEnd(refDate) });
+  const eRem = Math.max(0, (sv.emergency_target || 0) - emergencySaved);
+  if (eRem > 0) { const days = (sv.emergency_date && daysUntil(sv.emergency_date) > 0) ? daysUntil(sv.emergency_date) : 365; t.push({ key: "emg", label: "Emergency fund", glyph: "save", daily: eRem / days }); }
+  else if (sv.emergency_monthly > 0 && !(sv.emergency_target > 0)) t.push({ key: "emg", label: "Emergency fund", glyph: "save", daily: sv.emergency_monthly / DPM });
   if (sv.roth_auto) { const rem = Math.max(0, (sv.roth_limit || 7500) - (sv.roth_ytd || 0)); if (rem > 0) t.push({ key: "roth", label: "Roth IRA", glyph: "invest", daily: rem / daysToTaxDay() }); }
   else if (sv.roth_monthly > 0) t.push({ key: "roth", label: "Roth IRA", glyph: "invest", daily: sv.roth_monthly / DPM });
   if (sv.k401_monthly > 0) t.push({ key: "k401", label: "401(k)", glyph: "invest", daily: sv.k401_monthly / DPM });
   DB.goals.forEach(g => { const rem = Math.max(0, g.target_amount - g.current_amount); if (rem <= 0) return; let daily = 0; if (g.target_date && daysUntil(g.target_date) > 0) daily = rem / daysUntil(g.target_date); else if (g.monthly_contribution > 0) daily = g.monthly_contribution / DPM; if (daily > 0) t.push({ key: "goal" + g.id, label: g.name, glyph: "save", daily }); });
-  const eRem = Math.max(0, (sv.emergency_target || 0) - emergencySaved);
-  if (eRem > 0) { const days = (sv.emergency_date && daysUntil(sv.emergency_date) > 0) ? daysUntil(sv.emergency_date) : 365; t.push({ key: "emg", label: "Emergency fund", glyph: "save", daily: eRem / days }); }
-  else if (sv.emergency_monthly > 0 && !(sv.emergency_target > 0)) t.push({ key: "emg", label: "Emergency fund", glyph: "save", daily: sv.emergency_monthly / DPM });
   return t;
 }
 
@@ -688,6 +690,7 @@ function renderDashboard(v) {
 
 const ACCOUNT_TYPES = [["checking", "Checking"], ["savings", "Savings"], ["401k", "401(k)"], ["roth", "Roth IRA"], ["brokerage", "Brokerage"], ["other", "Other asset"], ["credit_card", "Credit card"], ["student_loan", "Student loan"], ["loan", "Other loan"]];
 const LIABILITY_TYPES = ["credit_card", "student_loan", "loan"];
+const HOLDINGS_TYPES = ["roth", "brokerage"];
 const typeLabel = t => (ACCOUNT_TYPES.find(x => x[0] === t) || [t, t])[1];
 const acctGlyph = t => GLYPH[TYPE_GLYPH[t] || "cash"];
 
@@ -960,7 +963,7 @@ function renderManage(v) {
   else if (state.acctSort === "amount") accts.sort((a, b) => signedBal(b) - signedBal(a));
   else if (state.acctSort === "type") accts.sort((a, b) => typeLabel(a.type).localeCompare(typeLabel(b.type)));
   accts.forEach(a => {
-    let meta = typeLabel(a.type); if (a.is_liability && a.apr) meta += ` · ${a.apr}%`;
+    let meta = typeLabel(a.type); if (a.is_liability && a.apr) meta += ` · ${a.apr}%`; if (a.holdings?.length) meta += ` · ${a.holdings.length} holding${a.holdings.length > 1 ? "s" : ""}`;
     const row = el(`<div class="row"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph">${acctGlyph(a.type)}</span><span style="display:flex;flex-direction:column"><span class="name">${escapeHtml(a.name)}</span><span class="meta">${meta}</span></span></div><div style="display:flex;align-items:center;gap:14px"><span class="v ${a.is_liability ? "down" : ""}">${a.is_liability ? "-" : ""}${money0(a.balance)}</span><button class="del">×</button></div></div>`);
     $(".edit", row).addEventListener("click", () => { state.editAccount = a.id; render(); });
     $(".del", row).addEventListener("click", () => { DB.accounts = DB.accounts.filter(x => x.id !== a.id); if (state.editAccount === a.id) state.editAccount = null; save(); render(); });
@@ -1054,10 +1057,11 @@ function renderManage(v) {
     <div class="two"><label class="field"><span>Credit score</span><input id="p-credit" type="number" value="${p.credit_score || ""}" placeholder="750" /></label><label class="field"><span>Pre-tax salary</span><input id="p-pretax" type="number" value="${p.annual_salary_pretax || ""}" placeholder="0" /></label></div>
     <label class="field"><span>Priorities (coach uses these)</span><textarea id="p-pri" rows="2" placeholder="swimming, safety net, debt-free by 30">${escapeHtml(p.priorities || "")}</textarea></label>
     <label class="field"><span>Anthropic API key (optional)</span><input id="p-key" type="password" placeholder="sk-ant-…" value="${escapeHtml(p.anthropic_key || "")}" autocomplete="off" /></label>
+    <label class="field"><span>Finnhub API key (optional, for live stock prices)</span><input id="p-fhkey" type="password" placeholder="free key from finnhub.io" value="${escapeHtml(p.finnhub_key || "")}" autocomplete="off" /></label>
     <button class="btn secondary" id="p-save">Save</button>
   </div>`);
   v.append(collapsible("Details", det));
-  $("#p-save", det).addEventListener("click", () => { DB.profile = { ...p, credit_score: +$("#p-credit", det).value || 0, annual_salary_pretax: +$("#p-pretax", det).value || 0, priorities: $("#p-pri", det).value.trim(), anthropic_key: $("#p-key", det).value.trim() }; save(); flash(det, "Saved"); });
+  $("#p-save", det).addEventListener("click", () => { DB.profile = { ...p, credit_score: +$("#p-credit", det).value || 0, annual_salary_pretax: +$("#p-pretax", det).value || 0, priorities: $("#p-pri", det).value.trim(), anthropic_key: $("#p-key", det).value.trim(), finnhub_key: $("#p-fhkey", det).value.trim() }; save(); flash(det, "Saved"); });
 
   // Data
   const data = el(`<div class="section"><div class="btn-row"></div><div class="note">On this device only. Back up regularly.</div></div>`);
@@ -1072,6 +1076,21 @@ function renderManage(v) {
 function download(name, text) { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 function flash(card, msg) { const n = el(`<div class="note ok">${msg}</div>`); card.append(n); setTimeout(() => n.remove(), 1600); }
 
+// ---------- holdings (live stock prices via Finnhub, on-demand) ----------
+function holdingsValue(holdings) { return (holdings || []).reduce((s, h) => s + h.shares * (h.price || 0), 0); }
+async function refreshHoldingPrices(account) {
+  const key = DB.profile.finnhub_key; if (!key || !account.holdings?.length) return;
+  for (const h of account.holdings) {
+    try {
+      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(h.symbol)}&token=${encodeURIComponent(key)}`);
+      const data = await res.json();
+      if (res.ok && typeof data.c === "number" && data.c > 0) { h.price = data.c; h.price_at = new Date().toISOString(); }
+    } catch {}
+  }
+  account.balance = holdingsValue(account.holdings);
+  save();
+}
+
 function accountForm() {
   const editing = state.editAccount ? DB.accounts.find(a => a.id === state.editAccount) : null;
   const e = editing || { name: "", type: "checking", balance: 0, apr: 0, principal: 0, interest_balance: 0 };
@@ -1085,10 +1104,51 @@ function accountForm() {
   </div>`);
   const typeSel = $("#a-type", form);
   const APY_TYPES = ["checking", "savings", "brokerage"];
-  const applyFields = () => { const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan"; form.querySelector('[data-f="balance"]').style.display = isLoan ? "none" : "block"; form.querySelector('[data-f="principal"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="interest"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="apr"]').style.display = isLiab ? "block" : "none"; form.querySelector('[data-f="apy"]').style.display = APY_TYPES.includes(t) ? "block" : "none"; };
+  const hasHoldings = editing && HOLDINGS_TYPES.includes(editing.type) && editing.holdings?.length > 0;
+  const applyFields = () => { const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan"; form.querySelector('[data-f="balance"]').style.display = (isLoan || hasHoldings) ? "none" : "block"; form.querySelector('[data-f="principal"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="interest"]').style.display = isLoan ? "block" : "none"; form.querySelector('[data-f="apr"]').style.display = isLiab ? "block" : "none"; form.querySelector('[data-f="apy"]').style.display = APY_TYPES.includes(t) ? "block" : "none"; };
   typeSel.addEventListener("change", applyFields); applyFields();
-  $("#a-save", form).addEventListener("click", () => { const name = $("#a-name", form).value.trim(); if (!name) return; const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan", apr = +$("#a-apr", form).value || 0, apy = +$("#a-apy", form).value || 0; let principal = 0, interest = 0, balance; if (isLoan) { principal = +$("#a-prin", form).value || 0; interest = +$("#a-int", form).value || 0; balance = principal + interest; } else balance = +$("#a-bal", form).value || 0; const data = { name, type: t, balance, is_liability: isLiab, apr: isLiab ? apr : 0, apy: APY_TYPES.includes(t) ? apy : 0, principal: isLoan ? principal : 0, interest_balance: isLoan ? interest : 0 }; if (editing) Object.assign(editing, data); else DB.accounts.push({ id: nextId(), ...data }); state.editAccount = null; save(); render(); });
+  $("#a-save", form).addEventListener("click", () => { const name = $("#a-name", form).value.trim(); if (!name) return; const t = typeSel.value, isLiab = LIABILITY_TYPES.includes(t), isLoan = t === "student_loan" || t === "loan", apr = +$("#a-apr", form).value || 0, apy = +$("#a-apy", form).value || 0; let principal = 0, interest = 0, balance; if (isLoan) { principal = +$("#a-prin", form).value || 0; interest = +$("#a-int", form).value || 0; balance = principal + interest; } else balance = hasHoldings ? editing.balance : (+$("#a-bal", form).value || 0); const data = { name, type: t, balance, is_liability: isLiab, apr: isLiab ? apr : 0, apy: APY_TYPES.includes(t) ? apy : 0, principal: isLoan ? principal : 0, interest_balance: isLoan ? interest : 0 }; if (editing) Object.assign(editing, data); else DB.accounts.push({ id: nextId(), ...data }); state.editAccount = null; save(); render(); });
   const cancel = $("#a-cancel", form); if (cancel) cancel.addEventListener("click", () => { state.editAccount = null; render(); });
+
+  // Holdings — track a Roth/brokerage account by ticker + shares instead of a flat balance;
+  // balance becomes shares × last-fetched price (refreshed on demand via Finnhub).
+  if (editing && HOLDINGS_TYPES.includes(editing.type)) {
+    editing.holdings = editing.holdings || [];
+    const hWrap = el(`<div class="section" style="margin-top:2px">
+      <div class="group-label" style="margin-top:0">Holdings</div>
+      <div id="h-list"></div>
+      <div class="two"><label class="field"><span>Symbol</span><input id="h-sym" placeholder="AAPL" /></label><label class="field"><span>Shares</span><input id="h-shares" type="number" placeholder="0" /></label></div>
+      <div class="btn-row"><button class="btn secondary" id="h-add">Add holding</button><button class="btn secondary" id="h-refresh">Refresh prices</button></div>
+      <div class="note" id="h-note"></div>
+    </div>`);
+    const renderHoldings = () => {
+      const list = $("#h-list", hWrap); list.innerHTML = "";
+      editing.holdings.forEach((h, i) => {
+        const row = el(`<div class="row"><div class="left"><span class="name">${escapeHtml(h.symbol)}</span><span class="meta">${h.shares} sh${h.price ? ` · ${money(h.price)}/sh` : " · no price yet"}</span></div><div style="display:flex;align-items:center;gap:14px"><span class="v">${money0(h.shares * (h.price || 0))}</span><button class="del">×</button></div></div>`);
+        $(".del", row).addEventListener("click", () => { editing.holdings.splice(i, 1); editing.balance = holdingsValue(editing.holdings); save(); render(); });
+        list.append(row);
+      });
+      const latest = editing.holdings.reduce((d, h) => (h.price_at && h.price_at > d) ? h.price_at : d, "");
+      $("#h-note", hWrap).textContent = editing.holdings.length
+        ? `Total ${money(holdingsValue(editing.holdings))}${latest ? " · priced as of " + fmtDate(latest) : " · add a Finnhub key in Details below, then refresh"}`
+        : "No holdings yet — balance is entered manually above.";
+    };
+    $("#h-add", hWrap).addEventListener("click", () => {
+      const sym = $("#h-sym", hWrap).value.trim().toUpperCase(), shares = +$("#h-shares", hWrap).value || 0;
+      if (!sym || shares <= 0) return;
+      editing.holdings.push({ symbol: sym, shares, price: 0, price_at: "" });
+      editing.balance = holdingsValue(editing.holdings);
+      save(); render();
+    });
+    $("#h-refresh", hWrap).addEventListener("click", async () => {
+      if (!DB.profile.finnhub_key) { $("#h-note", hWrap).textContent = "Add a Finnhub API key in Details below first."; return; }
+      const btn = $("#h-refresh", hWrap); btn.disabled = true; btn.textContent = "Refreshing…";
+      await refreshHoldingPrices(editing);
+      render();
+    });
+    renderHoldings();
+    form.append(hWrap);
+  }
 
   // Per-account projection: pay-off (debts) or growth (investments)
   const isInvest = ["roth", "401k", "brokerage", "savings"].includes(e.type);
