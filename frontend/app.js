@@ -746,8 +746,8 @@ const catColor = c => CAT_COLOR[c] || CAT_COLOR.other;
 function collapsible(label, contentEl, defaultOpen = true, key = label) {
   const k = `${state.tab}:${key}`;
   const open = k in state.collapse ? state.collapse[k] : defaultOpen;
-  const det = el(`<details class="coll" ${open ? "open" : ""}><summary class="group-label">${label}</summary></details>`);
-  det.append(contentEl);
+  const det = el(`<details class="coll" ${open ? "open" : ""}><summary class="group-label">${label}</summary><div class="coll-body"></div></details>`);
+  det.querySelector(".coll-body").append(contentEl);
   det.addEventListener("toggle", () => { state.collapse[k] = det.open; });
   return det;
 }
@@ -755,6 +755,19 @@ function sortControl(current, options, onChange) {
   const seg = el(`<div class="seg sortseg">${options.map(([k, l]) => `<button class="${k === current ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}</div>`);
   seg.querySelectorAll("button").forEach(b => b.addEventListener("click", () => onChange(b.dataset.k)));
   return seg;
+}
+// Slide a freshly-inserted dropdown body open, or slide a live one closed before the
+// state change + render() that would otherwise yank it out of the DOM instantly.
+function slideOpen(elm) {
+  elm.style.overflow = "hidden"; elm.style.height = "0px";
+  const h = elm.scrollHeight;
+  requestAnimationFrame(() => { elm.style.transition = "height .28s cubic-bezier(.22,.61,.36,1)"; elm.style.height = h + "px"; });
+  elm.addEventListener("transitionend", () => { elm.style.cssText = ""; }, { once: true });
+}
+function slideClose(elm, done) {
+  elm.style.overflow = "hidden"; elm.style.height = elm.scrollHeight + "px";
+  requestAnimationFrame(() => { elm.style.transition = "height .22s ease"; elm.style.height = "0px"; });
+  elm.addEventListener("transitionend", done, { once: true });
 }
 
 // ---------- shared undo (History + Calendar day view both revert the same way) ----------
@@ -1011,17 +1024,25 @@ function renderManage(v) {
   accts.forEach(a => {
     const open = state.editAccount === a.id;
     let meta = typeLabel(a.type); if (a.is_liability && a.apr) meta += ` · ${a.apr}%`; if (a.holdings?.length) meta += ` · ${a.holdings.length} holding${a.holdings.length > 1 ? "s" : ""}`;
-    const row = el(`<div class="row"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph">${acctGlyph(a.type)}</span><span style="display:flex;flex-direction:column"><span class="name">${escapeHtml(a.name)}</span><span class="meta">${meta}</span></span></div><div style="display:flex;align-items:center;gap:14px"><span class="v ${a.is_liability ? "down" : ""}">${a.is_liability ? "-" : ""}${money0(a.balance)}</span><button class="del">×</button></div></div>`);
-    $(".edit", row).addEventListener("click", () => { state.editAccount = open ? null : a.id; render(); });
+    const row = el(`<div class="row" data-acct="${a.id}"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph">${acctGlyph(a.type)}</span><span style="display:flex;flex-direction:column"><span class="name">${escapeHtml(a.name)}</span><span class="meta">${meta}</span></span></div><div style="display:flex;align-items:center;gap:14px"><span class="v ${a.is_liability ? "down" : ""}">${a.is_liability ? "-" : ""}${money0(a.balance)}</span><button class="del">×</button></div></div>`);
+    $(".edit", row).addEventListener("click", () => {
+      if (open && row.nextElementSibling) { slideClose(row.nextElementSibling, () => { state.editAccount = null; render(); }); return; }
+      state.editAccount = open ? null : a.id; render();
+      const fresh = $(`[data-acct="${a.id}"]`, v); if (fresh?.nextElementSibling) slideOpen(fresh.nextElementSibling);
+    });
     $(".del", row).addEventListener("click", () => { DB.accounts = DB.accounts.filter(x => x.id !== a.id); if (state.editAccount === a.id) state.editAccount = null; save(); render(); });
     acctWrap.append(row);
-    if (open) acctWrap.append(accountForm());
+    if (open) { const wrap = el(`<div class="drop-body"></div>`); wrap.append(accountForm()); acctWrap.append(wrap); }
   });
   const addOpen = state.editAccount === "new";
-  const addRow = el(`<div class="row"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph" style="font-size:18px">+</span><span class="name">Add account</span></div></div>`);
-  $(".edit", addRow).addEventListener("click", () => { state.editAccount = addOpen ? null : "new"; render(); });
+  const addRow = el(`<div class="row" data-acct="new"><div class="left edit" style="cursor:pointer;flex-direction:row;align-items:center;gap:12px"><span class="glyph" style="font-size:18px">+</span><span class="name">Add account</span></div></div>`);
+  $(".edit", addRow).addEventListener("click", () => {
+    if (addOpen && addRow.nextElementSibling) { slideClose(addRow.nextElementSibling, () => { state.editAccount = null; render(); }); return; }
+    state.editAccount = addOpen ? null : "new"; render();
+    const fresh = $(`[data-acct="new"]`, v); if (fresh?.nextElementSibling) slideOpen(fresh.nextElementSibling);
+  });
   acctWrap.append(addRow);
-  if (addOpen) acctWrap.append(accountForm());
+  if (addOpen) { const wrap = el(`<div class="drop-body"></div>`); wrap.append(accountForm()); acctWrap.append(wrap); }
   v.append(collapsible("Accounts", acctWrap));
 
   // Transfer — move cash between accounts (e.g. pay a credit card down from checking)
@@ -1045,8 +1066,8 @@ function renderManage(v) {
   const autoOn = sv.roth_auto, limit = sv.roth_limit || 7500;
   const sec = el(`<div class="section">
     <div class="row" style="border:none;padding:6px 0;cursor:pointer" id="roth-auto-row"><div class="left" style="flex-direction:row;align-items:center;gap:12px"><span class="glyph">${GLYPH.invest}</span><span class="name">Max ${new Date().getFullYear()} Roth · $${limit.toLocaleString()}</span></div><input type="checkbox" id="roth-auto" ${autoOn ? "checked" : ""} style="width:auto" /></div>
-    <div id="roth-auto-box" style="display:${autoOn ? "block" : "none"}"><label class="field"><span>Roth contributed so far this year</span><input id="roth-ytd" type="number" value="${sv.roth_ytd || ""}" placeholder="0" /></label><div class="note" id="roth-calc"></div></div>
-    <label class="field" id="roth-manual-box" style="display:${autoOn ? "none" : "block"}"><span>Roth / mo (manual)</span><input id="roth-m" type="number" value="${sv.roth_monthly || ""}" placeholder="0" /></label>
+    <div class="slide-box ${autoOn ? "open" : ""}" id="roth-auto-box"><div><label class="field"><span>Roth contributed so far this year</span><input id="roth-ytd" type="number" value="${sv.roth_ytd || ""}" placeholder="0" /></label><div class="note" id="roth-calc"></div></div></div>
+    <div class="slide-box ${autoOn ? "" : "open"}" id="roth-manual-box"><label class="field"><span>Roth / mo (manual)</span><input id="roth-m" type="number" value="${sv.roth_monthly || ""}" placeholder="0" /></label></div>
     <label class="field"><span>401(k) / mo</span><input id="k401-m" type="number" value="${sv.k401_monthly || ""}" placeholder="0" /></label>
     <button class="btn secondary" id="ret-save">Save</button>
   </div>`);
@@ -1054,7 +1075,7 @@ function renderManage(v) {
   v.append(collapsible("Retirement", retWrap));
   const rothCalc = () => { const ytd = +($("#roth-ytd", sec)?.value) || 0, rem = Math.max(0, limit - ytd); return `Save <b>${money0(rem / daysToTaxDay())}/day</b> to put in ${money0(rem)} more by Apr 15.`; };
   const calcEl = $("#roth-calc", sec); if (calcEl) calcEl.innerHTML = rothCalc();
-  const toggleRoth = () => { const on = $("#roth-auto", sec).checked; $("#roth-auto-box", sec).style.display = on ? "block" : "none"; $("#roth-manual-box", sec).style.display = on ? "none" : "block"; };
+  const toggleRoth = () => { const on = $("#roth-auto", sec).checked; $("#roth-auto-box", sec).classList.toggle("open", on); $("#roth-manual-box", sec).classList.toggle("open", !on); };
   $("#roth-auto-row", sec).addEventListener("click", e => { if (e.target.id !== "roth-auto") $("#roth-auto", sec).checked = !$("#roth-auto", sec).checked; toggleRoth(); });
   $("#roth-auto", sec).addEventListener("change", toggleRoth);
   $("#roth-ytd", sec)?.addEventListener("input", () => { if (calcEl) calcEl.innerHTML = rothCalc(); });
@@ -1085,18 +1106,22 @@ function renderManage(v) {
   else if (state.goalSort === "amount") goals.sort((a, b) => b.target_amount - a.target_amount);
   else if (state.goalSort === "priority") goals.sort((a, b) => (a.priority || 0) - (b.priority || 0));
   goals.forEach(g => {
-    if (state.editGoal === g.id) {
+    const open = state.editGoal === g.id;
+    const rem = Math.max(0, g.target_amount - g.current_amount), daily = g.target_date && daysUntil(g.target_date) > 0 ? rem / daysUntil(g.target_date) : (g.monthly_contribution > 0 ? g.monthly_contribution / DPM : 0);
+    const row = el(`<div class="row" data-goal="${g.id}"><div class="left edit" style="cursor:pointer"><span class="name">${escapeHtml(g.name)}</span><span class="meta">${money0(g.current_amount)}/${money0(g.target_amount)}${daily > 0 ? " · " + money0(daily) + "/day" : ""}</span></div><button class="del">×</button></div>`);
+    $(".edit", row).addEventListener("click", () => {
+      if (open && row.nextElementSibling) { slideClose(row.nextElementSibling, () => { state.editGoal = null; render(); }); return; }
+      state.editGoal = open ? null : g.id; render();
+      const fresh = $(`[data-goal="${g.id}"]`, v); if (fresh?.nextElementSibling) slideOpen(fresh.nextElementSibling);
+    });
+    $(".del", row).addEventListener("click", () => { DB.goals = DB.goals.filter(x => x.id !== g.id); if (state.editGoal === g.id) state.editGoal = null; save(); render(); });
+    goalWrap.append(row);
+    if (open) {
       const gMonths = (g.target_date && daysUntil(g.target_date) > 0) ? monthsUntil(g.target_date) : "";
       const eg = el(`<div class="section" style="padding-top:10px"><label class="field"><span>Name</span><input id="eg-name" value="${escapeHtml(g.name)}" /></label><div class="two"><label class="field"><span>Target</span><input id="eg-target" type="number" value="${g.target_amount}" /></label><label class="field"><span>Saved</span><input id="eg-current" type="number" value="${g.current_amount}" /></label></div><div class="two"><label class="field"><span>Reach in (months)</span><input id="eg-mo" type="number" inputmode="numeric" placeholder="12" value="${gMonths}" /></label><label class="field"><span>or /mo</span><input id="eg-monthly" type="number" value="${g.monthly_contribution || ""}" /></label></div><div style="display:flex;gap:10px"><button class="btn small" id="eg-save" style="flex:1">Save</button><button class="btn secondary small" id="eg-cancel">Cancel</button></div></div>`);
       $("#eg-save", eg).addEventListener("click", () => { const mo = +$("#eg-mo", eg).value || 0; Object.assign(g, { name: $("#eg-name", eg).value.trim() || g.name, target_amount: +$("#eg-target", eg).value || 0, current_amount: +$("#eg-current", eg).value || 0, target_date: mo > 0 ? isoMonthsFromNow(mo) : "", monthly_contribution: +$("#eg-monthly", eg).value || 0 }); state.editGoal = null; save(); render(); });
       $("#eg-cancel", eg).addEventListener("click", () => { state.editGoal = null; render(); });
-      goalWrap.append(eg);
-    } else {
-      const rem = Math.max(0, g.target_amount - g.current_amount), daily = g.target_date && daysUntil(g.target_date) > 0 ? rem / daysUntil(g.target_date) : (g.monthly_contribution > 0 ? g.monthly_contribution / DPM : 0);
-      const row = el(`<div class="row"><div class="left edit" style="cursor:pointer"><span class="name">${escapeHtml(g.name)}</span><span class="meta">${money0(g.current_amount)}/${money0(g.target_amount)}${daily > 0 ? " · " + money0(daily) + "/day" : ""}</span></div><button class="del">×</button></div>`);
-      $(".edit", row).addEventListener("click", () => { state.editGoal = g.id; render(); });
-      $(".del", row).addEventListener("click", () => { DB.goals = DB.goals.filter(x => x.id !== g.id); save(); render(); });
-      goalWrap.append(row);
+      const wrap = el(`<div class="drop-body"></div>`); wrap.append(eg); goalWrap.append(wrap);
     }
   });
   const ga = el(`<div class="section" style="margin-top:10px"><label class="field"><span>New goal</span><input id="g-name" placeholder="House down payment" /></label><div class="two"><label class="field"><span>Target</span><input id="g-target" type="number" placeholder="0" /></label><label class="field"><span>Saved</span><input id="g-current" type="number" placeholder="0" /></label></div><button class="btn secondary" id="g-add">Add goal</button></div>`);

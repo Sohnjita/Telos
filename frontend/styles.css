@@ -48,18 +48,35 @@ main { flex: 1; padding: 6px 22px 110px; }
 #view.slide-l { animation: slideL .26s cubic-bezier(.22,.61,.36,1); }
 #view.slide-r { animation: slideR .26s cubic-bezier(.22,.61,.36,1); }
 #view.fade-up { animation: fadeUp .2s ease; }
-@media (prefers-reduced-motion: reduce) { #view.slide-l, #view.slide-r, #view.fade-up { animation: none; } }
 .view-title { font-size: 26px; font-weight: 300; letter-spacing: -0.01em; margin: 10px 0 22px; }
 .group-label { font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); margin: 30px 0 10px; }
 .group-label:first-child { margin-top: 8px; }
 
-/* Collapsible sections (native <details>) */
+/* Collapsible sections (native <details>) — content slides via a grid-rows tween (0fr↔1fr),
+   which overrides the UA's instant display:none toggle without any JS height measuring. */
 .coll > summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none; -webkit-tap-highlight-color: transparent; }
 .coll > summary::-webkit-details-marker { display: none; }
-.coll > summary::after { content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint); transform: rotate(45deg); transition: transform .2s ease; margin-left: 8px; }
+.coll > summary::after { content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint); transform: rotate(45deg); transition: transform .25s ease; margin-left: 8px; }
 .coll[open] > summary::after { transform: rotate(-135deg); }
+.coll > .coll-body { display: grid; grid-template-rows: 0fr; overflow: hidden; transition: grid-template-rows .32s cubic-bezier(.22,.61,.36,1); }
+.coll[open] > .coll-body { grid-template-rows: 1fr; }
+.coll > .coll-body > * { min-height: 0; margin-bottom: 0; }
 .subtle { color: var(--muted); font-size: 13px; }
 .section { margin-bottom: 8px; }
+
+/* Dropdown rows whose form a click inserts/removes outright (account & goal editors in
+   Manage) — JS tweens the height around the render() that mounts/unmounts them. */
+.drop-body { will-change: height; }
+
+/* In-place show/hide toggles that don't go through render() (e.g. Roth auto vs manual) —
+   plain CSS slide since the same nodes persist across the toggle. */
+.slide-box { display: grid; grid-template-rows: 0fr; overflow: hidden; transition: grid-template-rows .28s cubic-bezier(.22,.61,.36,1); }
+.slide-box.open { grid-template-rows: 1fr; }
+.slide-box > * { min-height: 0; margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  #view.slide-l, #view.slide-r, #view.fade-up, .coll > .coll-body, .slide-box, .chk, .verdict .word { animation: none !important; transition: none !important; }
+}
 
 /* Hero number */
 .hero { padding: 26px 0 30px; text-align: center; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
@@ -143,7 +160,8 @@ select { -webkit-appearance: none; appearance: none; }
 
 /* Verdict */
 .verdict { text-align: center; padding: 34px 0 26px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
-.verdict .word { font-size: 44px; font-weight: 200; letter-spacing: 0.04em; }
+@keyframes verdictIn { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: scale(1); } }
+.verdict .word { font-size: 44px; font-weight: 200; letter-spacing: 0.04em; animation: verdictIn .35s cubic-bezier(.22,.61,.36,1); }
 .verdict .word.yes { color: var(--up); }
 .verdict .word.veto { color: var(--down); }
 .verdict .word.caution { color: var(--text); }
@@ -240,7 +258,8 @@ select { -webkit-appearance: none; appearance: none; }
 .stats .s + .s { border-left: 1px solid var(--line); }
 .stats .s .k { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
 .stats .s .v { font-size: 18px; font-weight: 300; margin-top: 5px; font-variant-numeric: tabular-nums; }
-.chk { display: inline-flex; margin-left: 3px; }
+@keyframes chkPop { from { opacity: 0; transform: scale(.4); } to { opacity: 1; transform: scale(1); } }
+.chk { display: inline-flex; margin-left: 3px; animation: chkPop .3s cubic-bezier(.34,1.56,.64,1); }
 .chk svg { width: 10px; height: 10px; stroke: var(--up); stroke-width: 3; fill: none; stroke-linecap: round; stroke-linejoin: round; vertical-align: -1px; }
 
 /* Calendar */
