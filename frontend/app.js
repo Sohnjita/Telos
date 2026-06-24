@@ -39,7 +39,7 @@ const blank = () => ({
   seq: 1, accounts: [], events: [], goals: [], purchases: [], saves: [], conversations: [],
   savings: { roth_auto: false, roth_ytd: 0, roth_limit: 7500, roth_monthly: 0, k401_monthly: 0, emergency_monthly: 0, emergency_target: 0, emergency_date: "" },
   profile: { credit_score: 0, priorities: "", anthropic_key: "", finnhub_key: "", annual_salary_pretax: 0 },
-  today_lock: { date: "", save_value: 0, spend_value: 0 },
+  today_lock: { date: "", save_value: 0, spend_value: 0, save_frozen: false, spend_frozen: false },
   game: { streak: 0, longest_streak: 0, last_hit_date: "", achievements: [] },
 });
 function migrate(db) {
@@ -203,13 +203,19 @@ function projectFrom(refDate, liquidAtRef, emergencySaved, ccBalance) {
   };
 }
 
-// Today's spend/save targets are fixed once — the first time they're computed each
-// day, from that day's opening liquid — instead of shrinking every time a purchase or
-// save gets logged. Tomorrow's fresh target comes from tomorrow's opening liquid, which
-// already reflects everything logged today; that's where the recalibration happens.
-function applyTodayLock(proj) {
+// Save and spend targets track live balances (so editing an account flows straight
+// through) until you log your first save or spend of the day — at that point THAT
+// target freezes at its pre-action value, so it doesn't shrink just because the
+// action itself moved liquid, and a checkmark can mean something stable. The two
+// targets freeze independently: logging a save only freezes Save, not Spend, and
+// vice versa. Tomorrow both unfreeze and start tracking live again.
+function applyTodayLock(proj, spentToday, savedToday) {
   const t = DB.today_lock, today = isoToday();
-  if (t.date !== today) { t.date = today; t.save_value = proj.save_today; t.spend_value = proj.spend_today; save(); }
+  if (t.date !== today) { t.date = today; t.save_value = proj.save_today; t.spend_value = proj.spend_today; t.save_frozen = false; t.spend_frozen = false; save(); }
+  let dirty = false;
+  if (!t.save_frozen) { if (savedToday > 0) { t.save_frozen = true; dirty = true; } else if (t.save_value !== proj.save_today) { t.save_value = proj.save_today; dirty = true; } }
+  if (!t.spend_frozen) { if (spentToday > 0) { t.spend_frozen = true; dirty = true; } else if (t.spend_value !== proj.spend_today) { t.spend_value = proj.spend_today; dirty = true; } }
+  if (dirty) save();
   return { save_today: t.save_value, spend_today: t.spend_value };
 }
 
@@ -250,7 +256,7 @@ function snapshot() {
   const savedToday = (DB.saves || []).filter(x => x.date === todayI).reduce((s, x) => s + x.amount, 0);
   const ccBalance = a.filter(x => x.type === "credit_card").reduce((s, x) => s + x.balance, 0);
   const proj = projectFrom(midnight(), liquid, emergencySaved, ccBalance);
-  const lock = applyTodayLock(proj);
+  const lock = applyTodayLock(proj, spentToday, savedToday);
   const saveLocked = lock.save_today > 0 && savedToday >= lock.save_today - 0.005;
   const spendLocked = lock.spend_today > 0 && spentToday >= lock.spend_today - 0.005;
   if (syncStreak(todayI, saveLocked)) save();

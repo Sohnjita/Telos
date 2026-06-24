@@ -1,6 +1,6 @@
 // Service worker: caches the app shell so Money runs offline, on 5G, anywhere.
 // Data is NOT here — it lives in the device's localStorage, separate from this cache.
-const CACHE = "telos-v33";
+const CACHE = "telos-v34";
 const ASSETS = [
   "./",
   "./index.html",
