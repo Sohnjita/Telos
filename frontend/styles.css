@@ -58,9 +58,9 @@ main { flex: 1; padding: 6px 22px 110px; }
 .coll > summary::-webkit-details-marker { display: none; }
 .coll > summary::after { content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint); transform: rotate(45deg); transition: transform .25s ease; margin-left: 8px; }
 .coll[open] > summary::after { transform: rotate(-135deg); }
-.coll > .coll-body { display: grid; grid-template-rows: 0fr; overflow: hidden; transition: grid-template-rows .32s cubic-bezier(.22,.61,.36,1); }
+.coll > .coll-body { display: grid; grid-template-rows: 0fr; grid-template-columns: minmax(0, 1fr); overflow: hidden; transition: grid-template-rows .32s cubic-bezier(.22,.61,.36,1); }
 .coll[open] > .coll-body { grid-template-rows: 1fr; }
-.coll > .coll-body > * { min-height: 0; margin-bottom: 0; }
+.coll > .coll-body > * { min-height: 0; min-width: 0; margin-bottom: 0; }
 .subtle { color: var(--muted); font-size: 13px; }
 .section { margin-bottom: 8px; }
 
@@ -70,9 +70,9 @@ main { flex: 1; padding: 6px 22px 110px; }
 
 /* In-place show/hide toggles that don't go through render() (e.g. Roth auto vs manual) —
    plain CSS slide since the same nodes persist across the toggle. */
-.slide-box { display: grid; grid-template-rows: 0fr; overflow: hidden; transition: grid-template-rows .28s cubic-bezier(.22,.61,.36,1); }
+.slide-box { display: grid; grid-template-rows: 0fr; grid-template-columns: minmax(0, 1fr); overflow: hidden; transition: grid-template-rows .28s cubic-bezier(.22,.61,.36,1); }
 .slide-box.open { grid-template-rows: 1fr; }
-.slide-box > * { min-height: 0; margin-bottom: 0; }
+.slide-box > * { min-height: 0; min-width: 0; margin-bottom: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   #view.slide-l, #view.slide-r, #view.fade-up, .coll > .coll-body, .slide-box, .chk, .verdict .word { animation: none !important; transition: none !important; }
